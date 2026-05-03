@@ -88,7 +88,7 @@ struct RecordingHeroView: View {
                     .foregroundStyle(.secondary)
             }
         } else {
-            VStack(spacing: 6) {
+            VStack(spacing: 10) {
                 Text("Start Recording")
                     .font(.title2.weight(.semibold))
                 Text("Auto-zoom follows your cursor while you work.")
@@ -96,8 +96,11 @@ struct RecordingHeroView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 320)
-                displayChooser
-                    .padding(.top, 8)
+                modeSegmented
+                modeDetail
+                if session.availableDisplays.count > 1 {
+                    displayChooser
+                }
                 if case .error(let msg) = session.state {
                     Label(msg, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -105,6 +108,75 @@ struct RecordingHeroView: View {
                         .padding(.top, 4)
                 }
             }
+        }
+    }
+
+    // MARK: - Mode picker + per-mode detail row
+
+    private var modeSegmented: some View {
+        Picker("", selection: $session.captureMode) {
+            ForEach(CaptureMode.allCases) { mode in
+                Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 280)
+    }
+
+    @ViewBuilder
+    private var modeDetail: some View {
+        switch session.captureMode {
+        case .fullDisplay:
+            HStack(spacing: 6) {
+                Image(systemName: "display").font(.caption)
+                Text(session.selectedDisplay?.localizedName ?? "Display")
+            }
+            .font(.callout).foregroundStyle(.secondary)
+
+        case .region:
+            let r = session.preferredRegion.rectInPoints
+            HStack(spacing: 8) {
+                Label("\(Int(r.width)) × \(Int(r.height))", systemImage: "rectangle.dashed")
+                    .font(.callout.weight(.medium).monospacedDigit())
+                    .foregroundStyle(.primary)
+                Button {
+                    session.presentRegionPicker()
+                } label: {
+                    Label("Adjust", systemImage: "scope")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+        case .window:
+            windowPicker
+        }
+    }
+
+    @ViewBuilder
+    private var windowPicker: some View {
+        if session.availableWindows.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "macwindow.badge.plus").font(.caption)
+                Text("No capturable windows found")
+            }
+            .font(.callout).foregroundStyle(.secondary)
+        } else {
+            Picker("", selection: Binding(
+                get: { session.selectedWindowID ?? session.availableWindows.first?.windowID ?? 0 },
+                set: { session.selectedWindowID = $0 }
+            )) {
+                ForEach(session.availableWindows, id: \.windowID) { w in
+                    let app = w.owningApplication?.applicationName ?? "App"
+                    let title = (w.title?.isEmpty == false) ? w.title! : app
+                    Text("\(app) — \(title)").tag(w.windowID)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(maxWidth: 320)
         }
     }
 

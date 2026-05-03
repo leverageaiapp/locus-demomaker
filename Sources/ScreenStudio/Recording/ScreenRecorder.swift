@@ -28,15 +28,70 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var displayPointSize: CGSize = .zero
     private(set) var frameRate: Int = 60
 
-    /// Begin capture of `display`, writing into `url`. Returns a `RecordingMetadata`-friendly
-    /// snapshot of display geometry.
-    func start(display: SCDisplay, url: URL, frameRate: Int = 60) async throws {
+    /// What we're recording.
+    enum Target {
+        case fullDisplay(SCDisplay)
+        case region(SCDisplay, rectInDisplayPoints: CGRect)
+        case window(SCWindow, on: SCDisplay)
+    }
+
+    private(set) var captureMode: CaptureMode = .fullDisplay
+    private(set) var capturedWindowTitle: String?
+
+    /// Begin capture against `target`, writing into `url`.
+    func start(target: Target, url: URL, frameRate: Int = 60) async throws {
         self.outputURL = url
         self.frameRate = frameRate
-        self.pixelSize = CGSize(width: display.width, height: display.height)
-        self.displayPointSize = CGSize(width: display.frame.width, height: display.frame.height)
-        self.displayOrigin = display.frame.origin
-        self.displayScale = display.frame.width > 0 ? CGFloat(display.width) / display.frame.width : 1.0
+
+        let filter: SCContentFilter
+        let surfaceOriginGlobalPoints: CGPoint
+        let surfacePointSize: CGSize
+        let scale: CGFloat
+        let cfg = SCStreamConfiguration()
+
+        switch target {
+        case .fullDisplay(let display):
+            self.captureMode = .fullDisplay
+            self.capturedWindowTitle = nil
+            scale = display.frame.width > 0 ? CGFloat(display.width) / display.frame.width : 1.0
+            surfacePointSize = display.frame.size
+            surfaceOriginGlobalPoints = display.frame.origin
+            self.pixelSize = CGSize(width: display.width, height: display.height)
+            filter = SCContentFilter(display: display, excludingWindows: [])
+
+        case .region(let display, let rectInDisplay):
+            self.captureMode = .region
+            self.capturedWindowTitle = nil
+            scale = display.frame.width > 0 ? CGFloat(display.width) / display.frame.width : 1.0
+            surfacePointSize = rectInDisplay.size
+            surfaceOriginGlobalPoints = CGPoint(
+                x: display.frame.origin.x + rectInDisplay.origin.x,
+                y: display.frame.origin.y + rectInDisplay.origin.y
+            )
+            self.pixelSize = CGSize(
+                width:  ceil(rectInDisplay.width  * scale),
+                height: ceil(rectInDisplay.height * scale)
+            )
+            // sourceRect is in display-local point coordinates, top-left origin.
+            cfg.sourceRect = rectInDisplay
+            filter = SCContentFilter(display: display, excludingWindows: [])
+
+        case .window(let window, let display):
+            self.captureMode = .window
+            self.capturedWindowTitle = window.title ?? window.owningApplication?.applicationName
+            scale = display.frame.width > 0 ? CGFloat(display.width) / display.frame.width : 1.0
+            surfacePointSize = window.frame.size
+            surfaceOriginGlobalPoints = window.frame.origin
+            self.pixelSize = CGSize(
+                width:  ceil(window.frame.width  * scale),
+                height: ceil(window.frame.height * scale)
+            )
+            filter = SCContentFilter(desktopIndependentWindow: window)
+        }
+
+        self.displayPointSize = surfacePointSize
+        self.displayOrigin = surfaceOriginGlobalPoints
+        self.displayScale = scale
 
         // Configure AVAssetWriter
         if FileManager.default.fileExists(atPath: url.path) {
@@ -78,9 +133,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         self.sessionStarted = false
         self.firstSampleTime = nil
 
-        // Configure SCStream
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        let cfg = SCStreamConfiguration()
+        // Configure SCStream — `filter` and `cfg.sourceRect` were set per-mode above.
         cfg.width = Int(pixelSize.width)
         cfg.height = Int(pixelSize.height)
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(frameRate))
