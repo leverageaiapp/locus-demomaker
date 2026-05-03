@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Xcode build artifacts
+build/
+DerivedData/
+*.xcuserdata/
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+*.xcarchive
+
+# XcodeGen — project is regenerated from project.yml via ./setup.sh
+ScreenStudio.xcodeproj/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+.swiftpm/
+
+# Build outputs
+dist/
+*.dmg
+
+# Misc / logs
+*.log
+.env
+.envrc

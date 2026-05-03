@@ -1,0 +1,11 @@
+{
+  "images" : [
+    { "filename" : "locus@1x.png", "idiom" : "mac", "scale" : "1x" },
+    { "filename" : "locus@2x.png", "idiom" : "mac", "scale" : "2x" },
+    { "filename" : "locus@3x.png", "idiom" : "mac", "scale" : "3x" }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

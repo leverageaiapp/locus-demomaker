@@ -1,0 +1,58 @@
+name: ScreenStudio
+options:
+  bundleIdPrefix: com.screenstudio
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # Set DEVELOPMENT_TEAM env before running `xcodegen generate` to use Apple
+    # Development signing — that gives a stable code requirement so macOS TCC
+    # remembers Screen Recording / Accessibility grants across rebuilds.
+    # Unset → ad-hoc signing → TCC re-prompts on every rebuild.
+    # Signing identity. Defaults to ad-hoc ("-") so the project builds without
+    # any Apple ID setup. To get stable TCC permissions across rebuilds, run
+    # `./setup.sh` after signing in to Xcode → Settings → Accounts.
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: ${CODE_SIGN_IDENTITY}
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  ScreenStudio:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/ScreenStudio
+      - path: Resources
+    info:
+      path: Sources/ScreenStudio/Info.plist
+      properties:
+        CFBundleName: ScreenStudio
+        CFBundleDisplayName: Locus DemoMaker
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "13.0"
+        NSHighResolutionCapable: true
+        NSCameraUsageDescription: "ScreenStudio does not use the camera."
+        NSMicrophoneUsageDescription: "Microphone is used to record audio narration alongside screen capture."
+        NSAppleEventsUsageDescription: "Required for accessibility features."
+    entitlements:
+      path: Sources/ScreenStudio/ScreenStudio.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.device.audio-input: true
+        com.apple.security.files.user-selected.read-write: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.screenstudio.app
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/ScreenStudio/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/ScreenStudio/ScreenStudio.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        COMBINE_HIDPI_IMAGES: YES
