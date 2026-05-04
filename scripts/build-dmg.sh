@@ -21,17 +21,34 @@ echo "→ Generating Xcode project…"
 ./setup.sh >/dev/null
 
 echo "→ Building $CONFIG configuration…"
-xcodebuild \
-  -project ScreenStudio.xcodeproj \
-  -scheme "$SCHEME" \
-  -configuration "$CONFIG" \
-  -destination 'platform=macOS' \
-  -derivedDataPath "$DERIVED" \
-  clean build \
-  CODE_SIGN_IDENTITY="-" \
-  CODE_SIGNING_REQUIRED=NO \
-  CODE_SIGNING_ALLOWED=NO \
-  >/dev/null
+# We pipe through xcpretty when it's available for a tidy summary, but fall
+# back to raw xcodebuild output otherwise. We never silence stderr — when the
+# build fails on CI we need the actual compiler errors, not a silent exit.
+if command -v xcpretty >/dev/null 2>&1; then
+  set -o pipefail
+  xcodebuild \
+    -project ScreenStudio.xcodeproj \
+    -scheme "$SCHEME" \
+    -configuration "$CONFIG" \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$DERIVED" \
+    clean build \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGNING_REQUIRED=NO \
+    CODE_SIGNING_ALLOWED=NO \
+    | xcpretty
+else
+  xcodebuild \
+    -project ScreenStudio.xcodeproj \
+    -scheme "$SCHEME" \
+    -configuration "$CONFIG" \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$DERIVED" \
+    clean build \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGNING_REQUIRED=NO \
+    CODE_SIGNING_ALLOWED=NO
+fi
 
 APP_PATH="$DERIVED/Build/Products/$CONFIG/$TARGET.app"
 [[ -d "$APP_PATH" ]] || { echo "✗ build product missing: $APP_PATH"; exit 1; }
