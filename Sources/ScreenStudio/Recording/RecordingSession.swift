@@ -99,12 +99,13 @@ final class RecordingSession: ObservableObject {
             if selectedDisplayID == nil, let first = content.displays.first {
                 selectedDisplayID = first.displayID
             }
-            // Filter to capturable, non-system windows owned by other apps so the
-            // user sees a sensible list to record. PRESERVE the front-to-back order
-            // SCShareableContent gives us — the visual picker depends on it to
-            // select the topmost match under the cursor.
+            // Filter to capturable, non-system windows owned by other apps. We
+            // then sort front-to-back authoritatively via CGWindowListCopyWindowInfo
+            // so the visual picker's "first frame containing the cursor wins"
+            // logic actually picks the *topmost* window, not whatever the
+            // underlying SC order happens to be on this macOS version.
             let ownPID = ProcessInfo.processInfo.processIdentifier
-            self.availableWindows = content.windows.filter { w in
+            let filtered = content.windows.filter { w in
                 guard let app = w.owningApplication else { return false }
                 if app.processID == ownPID { return false }
                 if !w.isOnScreen { return false }
@@ -112,6 +113,7 @@ final class RecordingSession: ObservableObject {
                 if (w.title ?? "").isEmpty && (app.applicationName).isEmpty { return false }
                 return true
             }
+            self.availableWindows = Self.sortFrontToBack(filtered)
             if let region = selectedDisplay.map({ self.preferredRegion.clamped(to: $0.frame.size) }) {
                 self.preferredRegion = region
             }
@@ -173,16 +175,38 @@ final class RecordingSession: ObservableObject {
                 true, onScreenWindowsOnly: true
             )
             let ownPID = ProcessInfo.processInfo.processIdentifier
-            // SCShareableContent.windows is ordered front-to-back.
-            return content.windows.first { w in
+            let candidates = content.windows.filter { w in
                 guard let app = w.owningApplication else { return false }
                 if app.processID == ownPID { return false }
                 if !w.isOnScreen { return false }
                 if w.frame.width < 200 || w.frame.height < 150 { return false }
                 return w.frame.intersects(display.frame)
             }
+            return Self.sortFrontToBack(candidates).first
         } catch {
             return nil
+        }
+    }
+
+    /// Front-to-back order for capturable windows. Uses
+    /// `CGWindowListCopyWindowInfo` which is documented to return windows in
+    /// front-to-back order — far more reliable than relying on whatever order
+    /// `SCShareableContent.windows` happens to use this macOS version.
+    /// Windows that don't appear in the CG list (e.g. private system surfaces)
+    /// fall to the back.
+    private static func sortFrontToBack(_ windows: [SCWindow]) -> [SCWindow] {
+        let info = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] ?? []
+        let frontIDs: [CGWindowID] = info.compactMap {
+            $0[kCGWindowNumber as String] as? CGWindowID
+        }
+        let positionByID: [CGWindowID: Int] = Dictionary(
+            uniqueKeysWithValues: frontIDs.enumerated().map { ($0.element, $0.offset) }
+        )
+        return windows.sorted { a, b in
+            (positionByID[a.windowID] ?? Int.max) < (positionByID[b.windowID] ?? Int.max)
         }
     }
 
