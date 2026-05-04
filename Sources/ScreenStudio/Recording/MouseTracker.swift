@@ -22,15 +22,20 @@ final class MouseTracker {
         self.displayScale = displayScale
         self.startMachTime = mach_absolute_time()
 
-        let mask: CGEventMask = (1 << CGEventType.mouseMoved.rawValue)
-            | (1 << CGEventType.leftMouseDown.rawValue)
-            | (1 << CGEventType.leftMouseUp.rawValue)
-            | (1 << CGEventType.rightMouseDown.rawValue)
-            | (1 << CGEventType.rightMouseUp.rawValue)
-            | (1 << CGEventType.scrollWheel.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
-            | (1 << CGEventType.keyDown.rawValue)
+        // Built via reduce so Swift's type-checker doesn't choke on the
+        // long left-shift OR chain (Xcode 16.x errors out with
+        // "unable to type-check this expression in reasonable time").
+        let interestedTypes: [CGEventType] = [
+            .mouseMoved,
+            .leftMouseDown, .leftMouseUp,
+            .rightMouseDown, .rightMouseUp,
+            .scrollWheel,
+            .leftMouseDragged, .rightMouseDragged,
+            .keyDown,
+        ]
+        let mask: CGEventMask = interestedTypes.reduce(0) { acc, t in
+            acc | (CGEventMask(1) << t.rawValue)
+        }
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let callback: CGEventTapCallBack = { _, type, event, refcon in
