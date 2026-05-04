@@ -92,8 +92,10 @@ final class RecordingSession: ObservableObject {
 
     func loadDisplays() async {
         do {
+            // excludingDesktopWindows: true → drop the wallpaper layer and
+            // anything else SC classifies as desktop chrome.
             let content = try await SCShareableContent.excludingDesktopWindows(
-                false, onScreenWindowsOnly: true
+                true, onScreenWindowsOnly: true
             )
             self.availableDisplays = content.displays
             if selectedDisplayID == nil, let first = content.displays.first {
@@ -109,6 +111,10 @@ final class RecordingSession: ObservableObject {
                 guard let app = w.owningApplication else { return false }
                 if app.processID == ownPID { return false }
                 if !w.isOnScreen { return false }
+                // Layer 0 = normal user-facing windows. Higher layers are Dock,
+                // menu bar, notification center, system overlays, floating panels.
+                // None of those should ever be selectable in the picker.
+                if w.windowLayer != 0 { return false }
                 if w.frame.width < 100 || w.frame.height < 100 { return false }
                 if (w.title ?? "").isEmpty && (app.applicationName).isEmpty { return false }
                 return true
@@ -179,6 +185,7 @@ final class RecordingSession: ObservableObject {
                 guard let app = w.owningApplication else { return false }
                 if app.processID == ownPID { return false }
                 if !w.isOnScreen { return false }
+                if w.windowLayer != 0 { return false }
                 if w.frame.width < 200 || w.frame.height < 150 { return false }
                 return w.frame.intersects(display.frame)
             }
@@ -188,26 +195,52 @@ final class RecordingSession: ObservableObject {
         }
     }
 
-    /// Front-to-back order for capturable windows. Uses
-    /// `CGWindowListCopyWindowInfo` which is documented to return windows in
-    /// front-to-back order — far more reliable than relying on whatever order
-    /// `SCShareableContent.windows` happens to use this macOS version.
-    /// Windows that don't appear in the CG list (e.g. private system surfaces)
-    /// fall to the back.
+    /// Front-to-back order for capturable windows.
+    ///
+    /// `CGWindowListCopyWindowInfo([.optionOnScreenOnly, ...])` is documented
+    /// to return windows in front-to-back order — far more reliable than the
+    /// undocumented order `SCShareableContent.windows` uses. We walk that list
+    /// directly and pull out matching SCWindow entries; anything missing from
+    /// the CG list falls to the back.
+    ///
+    /// We use `NSNumber.uint32Value` rather than `as? CGWindowID` because the
+    /// latter cast goes through Obj-C bridging and silently returns nil if the
+    /// underlying NSNumber storage type doesn't match exactly — which would
+    /// leave the dictionary empty and the sort effectively a no-op.
     private static func sortFrontToBack(_ windows: [SCWindow]) -> [SCWindow] {
         let info = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]] ?? []
-        let frontIDs: [CGWindowID] = info.compactMap {
-            $0[kCGWindowNumber as String] as? CGWindowID
-        }
-        let positionByID: [CGWindowID: Int] = Dictionary(
-            uniqueKeysWithValues: frontIDs.enumerated().map { ($0.element, $0.offset) }
+
+        let byID: [CGWindowID: SCWindow] = Dictionary(
+            uniqueKeysWithValues: windows.map { ($0.windowID, $0) }
         )
-        return windows.sorted { a, b in
-            (positionByID[a.windowID] ?? Int.max) < (positionByID[b.windowID] ?? Int.max)
+
+        var ordered: [SCWindow] = []
+        var seen = Set<CGWindowID>()
+        for d in info {
+            guard let n = d[kCGWindowNumber as String] as? NSNumber else { continue }
+            let id = CGWindowID(n.uint32Value)
+            if let w = byID[id], !seen.contains(id) {
+                ordered.append(w)
+                seen.insert(id)
+            }
         }
+        // Anything not found in the CG list (rare — private system surfaces)
+        // gets appended in its original order at the back.
+        for w in windows where !seen.contains(w.windowID) {
+            ordered.append(w)
+        }
+
+        #if DEBUG
+        let summary = ordered.prefix(5).map {
+            "\($0.owningApplication?.applicationName ?? "?")[\($0.windowID)]"
+        }.joined(separator: " > ")
+        print("WindowPicker order (front-first): \(summary)")
+        #endif
+
+        return ordered
     }
 
     // MARK: Window picking
