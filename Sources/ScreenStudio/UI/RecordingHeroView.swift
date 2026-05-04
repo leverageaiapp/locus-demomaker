@@ -9,7 +9,6 @@ struct RecordingHeroView: View {
 
     @State private var elapsed: TimeInterval = 0
     @State private var timer: Timer?
-    @State private var pressed = false
 
     var body: some View {
         VStack(spacing: 18) {
@@ -62,16 +61,13 @@ struct RecordingHeroView: View {
                             .shadow(color: Color.red.opacity(0.4), radius: 8, y: 2)
                     }
                 }
-                .scaleEffect(pressed ? 0.88 : 1.0)
-                .animation(.spring(response: 0.22, dampingFraction: 0.7), value: pressed)
             }
+            .frame(width: 96, height: 96)
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RecordButtonStyle())
         .disabled(isBusy)
         .opacity(isBusy ? 0.65 : 1)
-        .onLongPressGesture(minimumDuration: 0, maximumDistance: 60,
-                            pressing: { pressed = $0 }, perform: {})
     }
 
     // MARK: - Caption / picker
@@ -257,5 +253,18 @@ struct RecordingHeroView: View {
         let s = total % 60
         let ms = Int((t - Double(total)) * 10)
         return String(format: "%02d:%02d.%d", m, s, ms)
+    }
+}
+
+/// Custom style so the press animation is driven by `configuration.isPressed`
+/// (a SwiftUI-managed value) instead of an `onLongPressGesture` that would
+/// race with the Button's own tap recognizer and swallow clicks. That race was
+/// the cause of the "stop button needs many tries" bug.
+private struct RecordButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.7),
+                       value: configuration.isPressed)
     }
 }
