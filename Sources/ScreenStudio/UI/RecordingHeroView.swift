@@ -9,6 +9,9 @@ struct RecordingHeroView: View {
 
     @State private var elapsed: TimeInterval = 0
     @State private var timer: Timer?
+    /// Suppresses the auto-open behavior on the very first appearance, when the
+    /// captureMode is just being restored from UserDefaults.
+    @State private var didApplyInitialMode = false
 
     var body: some View {
         VStack(spacing: 18) {
@@ -28,6 +31,22 @@ struct RecordingHeroView: View {
                 .shadow(color: .black.opacity(0.04), radius: 12, y: 4)
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: session.isRecording)
+        .onChange(of: session.captureMode) { _, newMode in
+            // Skip the change SwiftUI emits when the @Published var first attaches.
+            guard didApplyInitialMode else {
+                didApplyInitialMode = true
+                return
+            }
+            switch newMode {
+            case .window:
+                session.presentWindowPicker()
+            case .region:
+                session.presentRegionPickerWithSmartDefault()
+            case .fullDisplay:
+                break
+            }
+        }
+        .onAppear { didApplyInitialMode = true }
     }
 
     // MARK: - Record button
@@ -152,28 +171,45 @@ struct RecordingHeroView: View {
 
     @ViewBuilder
     private var windowPicker: some View {
-        if session.availableWindows.isEmpty {
-            HStack(spacing: 6) {
-                Image(systemName: "macwindow.badge.plus").font(.caption)
-                Text("No capturable windows found")
-            }
-            .font(.callout).foregroundStyle(.secondary)
-        } else {
-            Picker("", selection: Binding(
-                get: { session.selectedWindowID ?? session.availableWindows.first?.windowID ?? 0 },
-                set: { session.selectedWindowID = $0 }
-            )) {
-                ForEach(session.availableWindows, id: \.windowID) { w in
-                    let app = w.owningApplication?.applicationName ?? "App"
-                    let title = (w.title?.isEmpty == false) ? w.title! : app
-                    Text("\(app) — \(title)").tag(w.windowID)
+        if let selected = session.selectedWindow {
+            HStack(spacing: 8) {
+                Label(windowDisplayName(selected), systemImage: "macwindow")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 240, alignment: .leading)
+                Button {
+                    session.presentWindowPicker()
+                } label: {
+                    Label("Change", systemImage: "scope")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .controlSize(.small)
-            .frame(maxWidth: 320)
+        } else {
+            HStack(spacing: 8) {
+                Label("No window picked", systemImage: "macwindow.badge.plus")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button {
+                    session.presentWindowPicker()
+                } label: {
+                    Label("Pick a window", systemImage: "scope")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
         }
+    }
+
+    private func windowDisplayName(_ w: SCWindow) -> String {
+        let app = w.owningApplication?.applicationName ?? ""
+        let title = (w.title?.isEmpty == false) ? w.title! : ""
+        if !app.isEmpty && !title.isEmpty { return "\(app) — \(title)" }
+        if !app.isEmpty { return app }
+        if !title.isEmpty { return title }
+        return "Window"
     }
 
     /// Single display → static label. Multiple → menu picker with real names.

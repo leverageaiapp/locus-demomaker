@@ -155,6 +155,10 @@ private final class OverlayView: NSView {
     private var rectAtDragStart: NSRect = .zero
     private let handleSize: CGFloat = 12
 
+    /// The clickable "↩ Confirm" pill, in view coordinates. Recomputed on each
+    /// draw and consulted by mouseDown so a click on it confirms.
+    private var confirmPillRect: NSRect = .zero
+
     override var isFlipped: Bool { false }
     override var acceptsFirstResponder: Bool { true }
 
@@ -206,40 +210,71 @@ private final class OverlayView: NSView {
     }
 
     private func drawHUD() {
+        // 1. Dimensions pill above the rect.
         let dims = "\(Int(selectionRect.width)) × \(Int(selectionRect.height))"
-        let attrs: [NSAttributedString.Key: Any] = [
+        let dimAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.white
         ]
-        let str = NSAttributedString(string: dims, attributes: attrs)
-        let dimsSize = str.size()
-        let pillRect = NSRect(
-            x: selectionRect.midX - dimsSize.width / 2 - 10,
+        let dimStr = NSAttributedString(string: dims, attributes: dimAttrs)
+        let dimSize = dimStr.size()
+        let dimRect = NSRect(
+            x: selectionRect.midX - dimSize.width / 2 - 10,
             y: selectionRect.maxY + 10,
-            width: dimsSize.width + 20,
-            height: 24
+            width: dimSize.width + 20,
+            height: dimSize.height + 8
         )
-        let pillBg = NSBezierPath(roundedRect: pillRect, xRadius: 6, yRadius: 6)
         NSColor.black.withAlphaComponent(0.7).setFill()
-        pillBg.fill()
-        str.draw(at: NSPoint(x: pillRect.minX + 10, y: pillRect.minY + 4))
+        NSBezierPath(roundedRect: dimRect, xRadius: 6, yRadius: 6).fill()
+        dimStr.draw(at: NSPoint(x: dimRect.minX + 10, y: dimRect.minY + 4))
 
-        // Hint along the bottom.
-        let hint = "Drag to move · Drag corners to resize · ↩ Confirm · Esc Cancel"
+        // 2. Big colored "↩ Confirm" pill INSIDE the rect, near the bottom — also clickable.
+        let confirmText = "↩  Press Enter to confirm"
+        let confirmAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
+            .foregroundColor: NSColor.white
+        ]
+        let cStr = NSAttributedString(string: confirmText, attributes: confirmAttrs)
+        let cSize = cStr.size()
+        // Anchor inside the bottom of the rect; if the rect is too short, float
+        // it just above the bottom edge so it's still visible.
+        let pillW = cSize.width + 32
+        let pillH: CGFloat = 36
+        let canFitInside = selectionRect.height > pillH + 24
+        let pillY = canFitInside
+            ? selectionRect.minY + 14
+            : max(8, selectionRect.minY - pillH - 10)
+        let pill = NSRect(
+            x: selectionRect.midX - pillW / 2,
+            y: pillY,
+            width: pillW, height: pillH
+        )
+        confirmPillRect = pill
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: pill, xRadius: 9, yRadius: 9).fill()
+        // Subtle inner highlight.
+        NSColor.white.withAlphaComponent(0.18).setStroke()
+        let inner = NSBezierPath(roundedRect: pill.insetBy(dx: 0.5, dy: 0.5), xRadius: 9, yRadius: 9)
+        inner.lineWidth = 1
+        inner.stroke()
+        cStr.draw(at: NSPoint(x: pill.minX + 16, y: pill.minY + (pillH - cSize.height) / 2))
+
+        // 3. Bottom hint strip.
+        let hint = "Drag to move · Drag corners to resize · Esc to cancel"
         let hintAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
             .foregroundColor: NSColor.white.withAlphaComponent(0.85)
         ]
         let hintStr = NSAttributedString(string: hint, attributes: hintAttrs)
-        let size = hintStr.size()
+        let hintSize = hintStr.size()
         let hintRect = NSRect(
-            x: bounds.midX - size.width / 2 - 14,
+            x: bounds.midX - hintSize.width / 2 - 14,
             y: 24,
-            width: size.width + 28, height: 30
+            width: hintSize.width + 28, height: hintSize.height + 12
         )
         NSColor.black.withAlphaComponent(0.65).setFill()
         NSBezierPath(roundedRect: hintRect, xRadius: 8, yRadius: 8).fill()
-        hintStr.draw(at: NSPoint(x: hintRect.minX + 14, y: hintRect.minY + 7))
+        hintStr.draw(at: NSPoint(x: hintRect.minX + 14, y: hintRect.minY + 6))
     }
 
     private func handleRects() -> [NSRect] {
@@ -273,6 +308,11 @@ private final class OverlayView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        // Click on the Confirm pill = confirm.
+        if !confirmPillRect.isEmpty && NSPointInRect(p, confirmPillRect) {
+            onConfirm?(selectionRect)
+            return
+        }
         dragStart = p
         rectAtDragStart = selectionRect
         dragMode = hitTestSelection(p)
@@ -334,6 +374,9 @@ private final class OverlayView: NSView {
             addCursorRect(r, cursor: .crosshair)
         }
         addCursorRect(selectionRect, cursor: .openHand)
+        if !confirmPillRect.isEmpty {
+            addCursorRect(confirmPillRect, cursor: .pointingHand)
+        }
     }
 
     // MARK: Keys

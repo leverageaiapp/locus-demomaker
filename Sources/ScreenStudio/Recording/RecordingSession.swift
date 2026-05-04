@@ -100,18 +100,18 @@ final class RecordingSession: ObservableObject {
                 selectedDisplayID = first.displayID
             }
             // Filter to capturable, non-system windows owned by other apps so the
-            // user sees a sensible list to record.
+            // user sees a sensible list to record. PRESERVE the front-to-back order
+            // SCShareableContent gives us — the visual picker depends on it to
+            // select the topmost match under the cursor.
             let ownPID = ProcessInfo.processInfo.processIdentifier
-            self.availableWindows = content.windows
-                .filter { w in
-                    guard let app = w.owningApplication else { return false }
-                    if app.processID == ownPID { return false }
-                    if !w.isOnScreen { return false }
-                    if w.frame.width < 100 || w.frame.height < 100 { return false }
-                    if (w.title ?? "").isEmpty && (app.applicationName).isEmpty { return false }
-                    return true
-                }
-                .sorted { ($0.title ?? "") < ($1.title ?? "") }
+            self.availableWindows = content.windows.filter { w in
+                guard let app = w.owningApplication else { return false }
+                if app.processID == ownPID { return false }
+                if !w.isOnScreen { return false }
+                if w.frame.width < 100 || w.frame.height < 100 { return false }
+                if (w.title ?? "").isEmpty && (app.applicationName).isEmpty { return false }
+                return true
+            }
             if let region = selectedDisplay.map({ self.preferredRegion.clamped(to: $0.frame.size) }) {
                 self.preferredRegion = region
             }
@@ -130,6 +130,74 @@ final class RecordingSession: ObservableObject {
             guard let self, let picked else { return }
             self.preferredRegion = CaptureRegion(rectInPoints: picked)
                 .clamped(to: display.frame.size)
+        }
+    }
+
+    /// Used when the user just switched into Region mode — show the selector
+    /// pre-populated with the topmost user-facing window's bounds, so the
+    /// default selection is something they probably want to record.
+    func presentRegionPickerWithSmartDefault() {
+        guard let display = selectedDisplay else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let initial = await self.smartDefaultRegion(on: display)
+            RegionSelector.present(on: display, initialRectInPoints: initial) { picked in
+                guard let picked else { return }
+                self.preferredRegion = CaptureRegion(rectInPoints: picked)
+                    .clamped(to: display.frame.size)
+            }
+        }
+    }
+
+    private func smartDefaultRegion(on display: SCDisplay) async -> CGRect {
+        let fallback = preferredRegion.clamped(to: display.frame.size).rectInPoints
+        guard let topmost = await topmostUserFacingWindow(on: display) else {
+            return fallback
+        }
+        // SCDisplay.frame and SCWindow.frame share the same Quartz coordinate
+        // space — converting to display-local is just origin subtraction.
+        let local = CGRect(
+            x: topmost.frame.minX - display.frame.minX,
+            y: topmost.frame.minY - display.frame.minY,
+            width: topmost.frame.width,
+            height: topmost.frame.height
+        )
+        let clipped = local.intersection(CGRect(origin: .zero, size: display.frame.size))
+        if clipped.width < 200 || clipped.height < 150 { return fallback }
+        return clipped
+    }
+
+    private func topmostUserFacingWindow(on display: SCDisplay) async -> SCWindow? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                true, onScreenWindowsOnly: true
+            )
+            let ownPID = ProcessInfo.processInfo.processIdentifier
+            // SCShareableContent.windows is ordered front-to-back.
+            return content.windows.first { w in
+                guard let app = w.owningApplication else { return false }
+                if app.processID == ownPID { return false }
+                if !w.isOnScreen { return false }
+                if w.frame.width < 200 || w.frame.height < 150 { return false }
+                return w.frame.intersects(display.frame)
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: Window picking
+
+    func presentWindowPicker() {
+        guard let display = selectedDisplay else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.loadDisplays()  // refresh window list — user might have closed/opened things
+            WindowPicker.present(on: display, windows: self.availableWindows) { picked in
+                if let picked {
+                    self.selectedWindowID = picked.windowID
+                }
+            }
         }
     }
 
