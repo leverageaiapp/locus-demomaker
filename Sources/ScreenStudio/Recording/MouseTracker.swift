@@ -30,6 +30,7 @@ final class MouseTracker {
             | (1 << CGEventType.scrollWheel.rawValue)
             | (1 << CGEventType.leftMouseDragged.rawValue)
             | (1 << CGEventType.rightMouseDragged.rawValue)
+            | (1 << CGEventType.keyDown.rawValue)
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -101,6 +102,17 @@ final class MouseTracker {
             kind = .scroll
             dx = event.getDoubleValueField(.scrollWheelEventDeltaAxis2)
             dy = event.getDoubleValueField(.scrollWheelEventDeltaAxis1)
+        case .keyDown:
+            // We deliberately ignore which key was pressed — keystrokes are
+            // captured purely as activity-impulse timestamps so the auto-zoom
+            // engine can detect "user is typing". The position fields are set
+            // to 0 to make accidental misuse obvious.
+            kind = .keyDown
+            let evt = MouseEvent(time: elapsed, kind: kind, x: 0, y: 0)
+            lock.lock()
+            _events.append(evt)
+            lock.unlock()
+            return
         default:
             return
         }

@@ -12,6 +12,11 @@ struct MouseEvent: Codable, Sendable {
         case rightUp
         case scroll
         case dragged
+        /// Any key press. We do NOT record the keycode or any modifier — only
+        /// the timestamp matters, so the auto-zoom engine can treat typing as
+        /// activity and pin focus on the last clicked location (the input
+        /// field the user is presumably typing into).
+        case keyDown
     }
 
     let time: Double
