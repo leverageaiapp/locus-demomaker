@@ -43,6 +43,20 @@ final class RecordingsLibrary: ObservableObject {
                   let meta = try? JSONDecoder().decode(RecordingMetadata.self, from: data) else {
                 continue  // skip incomplete / broken recordings
             }
+
+            // Optional: pick up the last-exported file pointer. We only set it
+            // if the file still exists — if the user moved/deleted the export,
+            // the row will fall back to showing "Export" again.
+            var lastExport: URL?
+            let exportInfoURL = dir.appendingPathComponent("export.json")
+            if let data = try? Data(contentsOf: exportInfoURL),
+               let info = try? JSONDecoder().decode(ExportInfo.self, from: data) {
+                let url = URL(fileURLWithPath: info.path)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    lastExport = url
+                }
+            }
+
             collected.append(RecordingItem(
                 id: meta.id,
                 directory: dir,
@@ -51,7 +65,8 @@ final class RecordingsLibrary: ObservableObject {
                 pixelHeight: meta.pixelHeight,
                 frameRate: meta.frameRate,
                 mouseEventCount: meta.mouseEvents.count,
-                duration: nil
+                duration: nil,
+                lastExportURL: lastExport
             ))
         }
         // Newest first.
@@ -77,6 +92,13 @@ final class RecordingsLibrary: ObservableObject {
                 items[idx].duration = dur
             }
         }
+    }
+
+    /// Persisted alongside source.mp4 so the post-export action buttons survive
+    /// app restarts. See `VideoExporter` (writer) and `refresh()` (reader).
+    struct ExportInfo: Codable {
+        let path: String
+        let exportedAt: Date
     }
 
     /// Move the recording to the Trash. Safe — recoverable from Finder.

@@ -24,7 +24,6 @@ struct RecordingsListView: View {
                             item: item,
                             isExporting: exportingItemID == item.id,
                             onExport: { runExport(item) },
-                            onReveal: { NSWorkspace.shared.activateFileViewerSelecting([item.directory]) },
                             onDelete: {
                                 pendingDelete = item
                                 showDeleteAlert = true
@@ -104,7 +103,7 @@ struct RecordingsListView: View {
     private func runExport(_ item: RecordingItem) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = "ScreenStudio-\(Int(Date().timeIntervalSince1970)).mp4"
+        panel.nameFieldStringValue = "Locus-DemoMaker-\(Int(Date().timeIntervalSince1970)).mp4"
         panel.title = "Export final video"
         panel.canCreateDirectories = true
         panel.begin { response in
@@ -112,7 +111,10 @@ struct RecordingsListView: View {
             Task {
                 exportingItemID = item.id
                 await exporter.export(recordingDir: item.directory, outputURL: outURL)
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                // Refresh so the row picks up the new export.json marker and
+                // can flip to the post-export action set.
+                await library.refresh()
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
                 exportingItemID = nil
             }
         }
@@ -125,7 +127,6 @@ private struct RecordingRow: View {
     let item: RecordingItem
     let isExporting: Bool
     let onExport: () -> Void
-    let onReveal: () -> Void
     let onDelete: () -> Void
     @EnvironmentObject var exporter: VideoExporter
     @State private var hovering = false
@@ -243,7 +244,17 @@ private struct RecordingRow: View {
         }
     }
 
+    @ViewBuilder
     private var actions: some View {
+        if let exported = item.lastExportURL,
+           FileManager.default.fileExists(atPath: exported.path) {
+            postExportActions(exported: exported)
+        } else {
+            preExportActions
+        }
+    }
+
+    private var preExportActions: some View {
         HStack(spacing: 6) {
             Button(action: onExport) {
                 Label("Export", systemImage: "square.and.arrow.up")
@@ -251,24 +262,85 @@ private struct RecordingRow: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
 
-            Menu {
-                Button { onReveal() } label: {
-                    Label("Show in Finder", systemImage: "folder")
+            secondaryMenu {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.sourceVideoURL])
+                } label: {
+                    Label("Show original recording in Finder", systemImage: "folder")
+                }
+                Button {
+                    NSWorkspace.shared.open(item.sourceVideoURL)
+                } label: {
+                    Label("Open original source.mp4", systemImage: "play.rectangle")
                 }
                 Divider()
-                Button(role: .destructive) { onDelete() } label: {
-                    Label("Move to Trash", systemImage: "trash")
+                Button(role: .destructive, action: onDelete) {
+                    Label("Move recording to Trash", systemImage: "trash")
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
         }
+    }
+
+    private func postExportActions(exported: URL) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([exported])
+            } label: {
+                Label("Show in Finder", systemImage: "folder")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .help(exported.lastPathComponent)
+
+            secondaryMenu {
+                // The two important actions, surfaced first.
+                Section {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([exported])
+                    } label: {
+                        Label("Show exported file in Finder", systemImage: "folder")
+                    }
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([item.sourceVideoURL])
+                    } label: {
+                        Label("Show original recording in Finder", systemImage: "folder.badge.gearshape")
+                    }
+                }
+                Section {
+                    Button {
+                        NSWorkspace.shared.open(exported)
+                    } label: {
+                        Label("Open exported file", systemImage: "play.rectangle.on.rectangle")
+                    }
+                    Button {
+                        NSWorkspace.shared.open(item.sourceVideoURL)
+                    } label: {
+                        Label("Open original source.mp4", systemImage: "play.rectangle")
+                    }
+                }
+                Section {
+                    Button(action: onExport) {
+                        Label("Re-export…", systemImage: "square.and.arrow.up.on.square")
+                    }
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Move recording to Trash", systemImage: "trash")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shared `…` menu trigger used by both pre- and post-export rows.
+    private func secondaryMenu<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        Menu(content: content) {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     private func formatDuration(_ d: Double) -> String {

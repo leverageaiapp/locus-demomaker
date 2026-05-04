@@ -12,9 +12,13 @@ struct RecordingItem: Identifiable, Hashable {
     let mouseEventCount: Int
     /// Loaded asynchronously from the source video — `nil` until probed.
     var duration: Double?
+    /// Path to the most recently exported mp4 — `nil` if never exported, or if the
+    /// exported file no longer exists at the recorded path.
+    var lastExportURL: URL?
 
     var sourceVideoURL: URL { directory.appendingPathComponent("source.mp4") }
     var metadataURL: URL { directory.appendingPathComponent("metadata.json") }
+    var exportInfoURL: URL { directory.appendingPathComponent("export.json") }
 
     var displayTimestamp: String {
         let f = DateFormatter()

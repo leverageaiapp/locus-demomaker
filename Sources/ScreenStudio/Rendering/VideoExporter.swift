@@ -123,6 +123,16 @@ final class VideoExporter: ObservableObject {
             switch exporter.status {
             case .completed:
                 phase = .finished(outputURL)
+                // Drop a marker next to source.mp4 so the row's action buttons
+                // can switch from "Export" to "Show in Finder" — and stay
+                // switched across app restarts.
+                let info = RecordingsLibrary.ExportInfo(
+                    path: outputURL.path, exportedAt: Date()
+                )
+                let infoURL = recordingDir.appendingPathComponent("export.json")
+                if let data = try? JSONEncoder().encode(info) {
+                    try? data.write(to: infoURL)
+                }
                 logger.info("Export complete: \(outputURL.path)")
             case .cancelled:
                 phase = .failed("Export cancelled")
