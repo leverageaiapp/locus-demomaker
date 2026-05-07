@@ -25,7 +25,7 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Required for accessibility features.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>ScreenStudio does not use the camera.</string>
+	<string>Camera is used to record a circular presenter bubble alongside screen capture.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>

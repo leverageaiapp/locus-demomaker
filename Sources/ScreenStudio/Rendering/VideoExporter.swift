@@ -42,10 +42,19 @@ final class VideoExporter: ObservableObject {
             return
         }
 
-        let asset = AVURLAsset(url: videoURL)
-        do {
-            let duration = try await asset.load(.duration)
-            let videoTracks = try await asset.loadTracks(withMediaType: .video)
+            let asset = AVURLAsset(url: videoURL)
+            let cameraURL = metadata.cameraVideoFileName.map { recordingDir.appendingPathComponent($0) }
+            let cameraAsset: AVURLAsset?
+            if let cameraURL, FileManager.default.fileExists(atPath: cameraURL.path) {
+                cameraAsset = AVURLAsset(url: cameraURL)
+            } else {
+                cameraAsset = nil
+            }
+
+            do {
+                let duration = try await asset.load(.duration)
+                let videoTracks = try await asset.loadTracks(withMediaType: .video)
+                let audioTracks = try await asset.loadTracks(withMediaType: .audio)
             guard let videoTrack = videoTracks.first else {
                 phase = .failed("No video track in source")
                 return
@@ -84,6 +93,37 @@ final class VideoExporter: ObservableObject {
                 CMTimeRange(start: .zero, duration: duration),
                 of: videoTrack, at: .zero
             )
+            if let audioTrack = audioTracks.first,
+               let compAudioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+               ) {
+                try compAudioTrack.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: duration),
+                    of: audioTrack,
+                    at: .zero
+                )
+            }
+
+            var cameraTrackID: CMPersistentTrackID?
+            if let cameraAsset {
+                let cameraTracks = try await cameraAsset.loadTracks(withMediaType: .video)
+                if let cameraSourceTrack = cameraTracks.first,
+                   let cameraCompTrack = composition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                    ) {
+                    let cameraDuration = try await cameraAsset.load(.duration)
+                    let insertDuration = CMTimeCompare(cameraDuration, duration) < 0 ? cameraDuration : duration
+                    try cameraCompTrack.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: insertDuration),
+                        of: cameraSourceTrack,
+                        at: .zero
+                    )
+                    cameraTrackID = cameraCompTrack.trackID
+                }
+            }
+            let sourceTrackIDs = [compTrack.trackID] + (cameraTrackID.map { [$0] } ?? [])
 
             let videoComposition = AVMutableVideoComposition()
             videoComposition.customVideoCompositorClass = AutoZoomCompositor.self
@@ -92,10 +132,15 @@ final class VideoExporter: ObservableObject {
 
             let instruction = AutoZoomCompositionInstruction(
                 timeRange: CMTimeRange(start: .zero, duration: duration),
-                sourceTrackIDs: [compTrack.trackID],
+                sourceTrackIDs: sourceTrackIDs,
+                screenTrackID: compTrack.trackID,
+                cameraTrackID: cameraTrackID,
                 keyframes: keyframes,
                 videoSize: videoSize,
-                frameRate: metadata.frameRate
+                frameRate: metadata.frameRate,
+                cameraOverlayPosition: metadata.cameraOverlayPosition ?? .bottomRight,
+                cameraOverlaySizeRatio: metadata.cameraOverlaySizeRatio ?? 0.18,
+                cameraOverlayCenter: nil
             )
             videoComposition.instructions = [instruction]
 

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AVFoundation
 import ScreenCaptureKit
 import OSLog
 
@@ -45,17 +46,22 @@ final class RecordingSession: ObservableObject {
     ) {
         didSet { persistRegion() }
     }
+    @Published var includeCamera: Bool = true {
+        didSet { UserDefaults.standard.set(includeCamera, forKey: Self.includeCameraKey) }
+    }
 
     @Published private(set) var lastRecordingDirectory: URL?
 
     // MARK: Internals
 
     private let recorder = ScreenRecorder()
+    private let cameraRecorder = CameraRecorder()
     private let mouseTracker = MouseTracker()
     private var startedAt: Date?
 
     private static let modeKey = "captureMode"
     private static let regionKey = "preferredRegion"
+    private static let includeCameraKey = "includeCamera"
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: Self.modeKey),
@@ -65,6 +71,9 @@ final class RecordingSession: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: Self.regionKey),
            let region = try? JSONDecoder().decode(CaptureRegion.self, from: data) {
             self.preferredRegion = region
+        }
+        if UserDefaults.standard.object(forKey: Self.includeCameraKey) != nil {
+            self.includeCamera = UserDefaults.standard.bool(forKey: Self.includeCameraKey)
         }
     }
 
@@ -265,6 +274,20 @@ final class RecordingSession: ObservableObject {
         state = .preparing
         await loadDisplays()
 
+        let microphoneGranted: Bool
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneGranted = true
+        case .notDetermined:
+            microphoneGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        default:
+            microphoneGranted = false
+        }
+        guard microphoneGranted else {
+            state = .error("Microphone permission needed.")
+            return
+        }
+
         guard let display = selectedDisplay else {
             state = .error("No display available")
             return
@@ -287,7 +310,24 @@ final class RecordingSession: ObservableObject {
 
         let dir = Self.makeRecordingDirectory()
         let videoURL = dir.appendingPathComponent("source.mp4")
+        let cameraURL = dir.appendingPathComponent("camera.mp4")
         do {
+            if includeCamera {
+                let cameraGranted: Bool
+                switch AVCaptureDevice.authorizationStatus(for: .video) {
+                case .authorized:
+                    cameraGranted = true
+                case .notDetermined:
+                    cameraGranted = await AVCaptureDevice.requestAccess(for: .video)
+                default:
+                    cameraGranted = false
+                }
+                guard cameraGranted else {
+                    state = .error("Camera permission needed for Face Camera.")
+                    return
+                }
+                try await cameraRecorder.start(url: cameraURL)
+            }
             try await recorder.start(target: target, url: videoURL, frameRate: 60)
             // MouseTracker uses the captured surface origin (already global points)
             // and the surface scale — same logic for all 3 modes.
@@ -296,6 +336,7 @@ final class RecordingSession: ObservableObject {
                 displayScale: recorder.displayScale
             ) else {
                 _ = try? await recorder.stop()
+                _ = await cameraRecorder.stop()
                 state = .error("Mouse tracker failed — accessibility permission needed.")
                 return
             }
@@ -303,6 +344,7 @@ final class RecordingSession: ObservableObject {
             self.startedAt = Date()
             state = .recording(startedAt: Date())
         } catch {
+            _ = await cameraRecorder.stop()
             logger.error("startRecording failed: \(error.localizedDescription)")
             state = .error(error.localizedDescription)
         }
@@ -315,6 +357,7 @@ final class RecordingSession: ObservableObject {
         let events = mouseTracker.stop()
         do {
             let videoURL = try await recorder.stop()
+            let cameraURL = await cameraRecorder.stop()
             guard let dir = lastRecordingDirectory else { return nil }
             let metadata = RecordingMetadata(
                 id: UUID(),
@@ -329,7 +372,12 @@ final class RecordingSession: ObservableObject {
                 frameRate: recorder.frameRate,
                 mouseEvents: events,
                 captureMode: recorder.captureMode,
-                capturedWindowTitle: recorder.capturedWindowTitle
+                capturedWindowTitle: recorder.capturedWindowTitle,
+                cameraVideoFileName: cameraURL == nil ? nil : "camera.mp4",
+                cameraOverlayPosition: cameraURL == nil ? nil : .bottomRight,
+                cameraOverlaySizeRatio: cameraURL == nil ? nil : 0.18,
+                cameraOverlayCenterX: nil,
+                cameraOverlayCenterY: nil
             )
             let metaURL = dir.appendingPathComponent("metadata.json")
             let encoder = JSONEncoder()

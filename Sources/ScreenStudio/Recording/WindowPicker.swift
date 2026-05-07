@@ -18,11 +18,15 @@ final class WindowPicker {
         let window = OverlayWindow(screen: screen, windows: windows)
         window.onPick = { picked in
             window.close()
-            onDone(picked)
+            DispatchQueue.main.async {
+                onDone(picked)
+            }
         }
         window.onCancel = {
             window.close()
-            onDone(nil)
+            DispatchQueue.main.async {
+                onDone(nil)
+            }
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

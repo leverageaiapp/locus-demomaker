@@ -34,8 +34,30 @@ struct RecordingMetadata: Codable, Sendable {
     /// For `.window` mode: a label so the recording is recognizable in the list.
     let capturedWindowTitle: String?
 
+    // MARK: New in v0.3
+
+    /// Sidecar camera recording, if present. The exporter composites this after
+    /// applying screen zoom so the circular camera bubble stays fixed.
+    let cameraVideoFileName: String?
+    let cameraOverlayPosition: CameraOverlayPosition?
+    let cameraOverlaySizeRatio: CGFloat?
+    /// Normalized center in final output coordinates: x is left→right, y is top→bottom.
+    let cameraOverlayCenterX: CGFloat?
+    let cameraOverlayCenterY: CGFloat?
+
     var pixelSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
 
     /// Effective mode — falls back to fullDisplay for legacy records.
     var effectiveMode: CaptureMode { captureMode ?? .fullDisplay }
+
+    var hasCameraOverlay: Bool {
+        cameraVideoFileName?.isEmpty == false
+    }
+}
+
+enum CameraOverlayPosition: String, Codable, Sendable {
+    case bottomRight
+    case bottomLeft
+    case topRight
+    case topLeft
 }

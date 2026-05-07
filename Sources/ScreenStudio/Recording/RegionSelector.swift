@@ -37,11 +37,15 @@ final class RegionSelector {
                 screen: screen
             )
             window.close()
-            onDone(rectInDisplay)
+            DispatchQueue.main.async {
+                onDone(rectInDisplay)
+            }
         }
         window.onCancel = {
             window.close()
-            onDone(nil)
+            DispatchQueue.main.async {
+                onDone(nil)
+            }
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

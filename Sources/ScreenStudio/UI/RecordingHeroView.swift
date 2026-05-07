@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import ScreenCaptureKit
 
 /// The hero "press to record" panel at the top of the window.
@@ -9,6 +10,7 @@ struct RecordingHeroView: View {
 
     @State private var elapsed: TimeInterval = 0
     @State private var timer: Timer?
+    @State private var hideCameraPreviewWhileStarting = false
     /// Suppresses the auto-open behavior on the very first appearance, when the
     /// captureMode is just being restored from UserDefaults.
     @State private var didApplyInitialMode = false
@@ -113,6 +115,10 @@ struct RecordingHeroView: View {
                     .frame(maxWidth: 320)
                 modeSegmented
                 modeDetail
+                cameraToggle
+                if session.includeCamera && !hideCameraPreviewWhileStarting {
+                    cameraPositioner
+                }
                 if session.availableDisplays.count > 1 {
                     displayChooser
                 }
@@ -212,6 +218,50 @@ struct RecordingHeroView: View {
         return "Window"
     }
 
+    private var cameraToggle: some View {
+        Toggle(isOn: $session.includeCamera) {
+            Label("Face Camera", systemImage: "camera.fill")
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize()
+    }
+
+    private var cameraPositioner: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            let bubbleSize = min(78, max(58, size.width * 0.22))
+            let radius = bubbleSize / 2
+            let maxX = size.width - radius - 10
+            let maxY = size.height - radius - 10
+            let center = CGPoint(x: maxX, y: maxY)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                    }
+
+                CameraPreview()
+                    .frame(width: bubbleSize, height: bubbleSize)
+                    .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white, lineWidth: 3)
+                            .shadow(color: .black.opacity(0.28), radius: 6, y: 2)
+                    }
+                    .position(center)
+            }
+        }
+        .frame(width: 340, height: 190)
+        .padding(.top, 2)
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+    }
+
     /// Single display → static label. Multiple → menu picker with real names.
     @ViewBuilder
     private var displayChooser: some View {
@@ -255,9 +305,14 @@ struct RecordingHeroView: View {
     }
 
     private func start() {
+        hideCameraPreviewWhileStarting = true
         Task {
             await session.startRecording()
-            startTimer()
+            if session.isRecording {
+                startTimer()
+            } else {
+                hideCameraPreviewWhileStarting = false
+            }
         }
     }
 
@@ -265,6 +320,7 @@ struct RecordingHeroView: View {
         Task {
             stopTimer()
             _ = await session.stopRecording()
+            hideCameraPreviewWhileStarting = false
             await library.refresh()
         }
     }
@@ -302,5 +358,90 @@ private struct RecordButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
             .animation(.spring(response: 0.22, dampingFraction: 0.7),
                        value: configuration.isPressed)
+    }
+}
+
+private struct CameraPreview: NSViewRepresentable {
+    func makeNSView(context: Context) -> CameraPreviewView {
+        let view = CameraPreviewView()
+        view.start()
+        return view
+    }
+
+    func updateNSView(_ nsView: CameraPreviewView, context: Context) {
+        nsView.start()
+    }
+
+    static func dismantleNSView(_ nsView: CameraPreviewView, coordinator: ()) {
+        nsView.stop()
+    }
+}
+
+private final class CameraPreviewView: NSView {
+    private let session = AVCaptureSession()
+    private let queue = DispatchQueue(label: "com.screenstudio.camera.preview", qos: .userInitiated)
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var configured = false
+
+    override func layout() {
+        super.layout()
+        previewLayer?.frame = bounds
+    }
+
+    func start() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            startAuthorized()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard granted else { return }
+                DispatchQueue.main.async {
+                    self?.startAuthorized()
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    func stop() {
+        queue.async { [session] in
+            if session.isRunning {
+                session.stopRunning()
+            }
+        }
+    }
+
+    private func startAuthorized() {
+        if !configured {
+            configure()
+        }
+        queue.async { [session] in
+            if !session.isRunning {
+                session.startRunning()
+            }
+        }
+    }
+
+    private func configure() {
+        configured = true
+        session.beginConfiguration()
+        session.sessionPreset = .medium
+
+        if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+            ?? AVCaptureDevice.default(for: .video),
+           let input = try? AVCaptureDeviceInput(device: device),
+           session.canAddInput(input) {
+            session.addInput(input)
+        }
+
+        session.commitConfiguration()
+
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.frame = bounds
+        wantsLayer = true
+        self.layer?.addSublayer(layer)
+        previewLayer = layer
     }
 }

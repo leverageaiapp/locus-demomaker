@@ -8,15 +8,18 @@ import OSLog
 /// Wraps SCStream + AVAssetWriter to record a single SCDisplay to an .mp4 file.
 /// Designed for post-processing: we record at native resolution and a fixed framerate,
 /// then the renderer applies auto-zoom on top of the recorded file.
-final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
+final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let logger = Logger(subsystem: "com.screenstudio.app", category: "ScreenRecorder")
 
     private var stream: SCStream?
+    private let audioCaptureSession = AVCaptureSession()
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
+    private var audioInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
 
     private let videoQueue = DispatchQueue(label: "com.screenstudio.video", qos: .userInteractive)
+    private let audioQueue = DispatchQueue(label: "com.screenstudio.audio", qos: .userInteractive)
     private let writerQueue = DispatchQueue(label: "com.screenstudio.writer", qos: .userInteractive)
 
     private var sessionStarted = false
@@ -111,6 +114,14 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         ]
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         input.expectsMediaDataInRealTime = true
+        let audioSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 44_100,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 128_000
+        ]
+        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+        audioInput.expectsMediaDataInRealTime = true
         let attrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: Int(pixelSize.width),
@@ -122,6 +133,11 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                           userInfo: [NSLocalizedDescriptionKey: "AVAssetWriter rejected video input"])
         }
         writer.add(input)
+        if writer.canAdd(audioInput) {
+            writer.add(audioInput)
+        } else {
+            logger.warning("AVAssetWriter rejected audio input; continuing without microphone audio")
+        }
         guard writer.startWriting() else {
             throw writer.error ?? NSError(domain: "ScreenRecorder", code: 2,
                                           userInfo: [NSLocalizedDescriptionKey: "Failed to start writing"])
@@ -129,6 +145,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         self.assetWriter = writer
         self.videoInput = input
+        self.audioInput = writer.inputs.contains(audioInput) ? audioInput : nil
         self.pixelBufferAdaptor = adaptor
         self.sessionStarted = false
         self.firstSampleTime = nil
@@ -145,6 +162,10 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
+        try configureMicrophoneCapture()
+        audioQueue.async { [weak self] in
+            self?.audioCaptureSession.startRunning()
+        }
         try await stream.startCapture()
         self.stream = stream
         logger.info("Recording started → \(url.path)")
@@ -158,10 +179,14 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         try? await stream.stopCapture()
         self.stream = nil
+        audioQueue.async { [weak self] in
+            self?.audioCaptureSession.stopRunning()
+        }
 
         return await withCheckedContinuation { (cont: CheckedContinuation<URL, Never>) in
             writerQueue.async {
                 input.markAsFinished()
+                self.audioInput?.markAsFinished()
                 writer.finishWriting {
                     cont.resume(returning: url)
                 }
@@ -199,6 +224,55 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 if !adaptor.append(pixelBuffer, withPresentationTime: pts) {
                     self.logger.error("Pixel buffer append failed: \(writer.error?.localizedDescription ?? "unknown")")
                 }
+            }
+        }
+    }
+
+    // MARK: - Microphone
+
+    private func configureMicrophoneCapture() throws {
+        audioCaptureSession.beginConfiguration()
+        defer { audioCaptureSession.commitConfiguration() }
+
+        audioCaptureSession.inputs.forEach { audioCaptureSession.removeInput($0) }
+        audioCaptureSession.outputs.forEach { audioCaptureSession.removeOutput($0) }
+
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            logger.warning("No microphone available; continuing without audio")
+            return
+        }
+        let micInput = try AVCaptureDeviceInput(device: device)
+        guard audioCaptureSession.canAddInput(micInput) else {
+            logger.warning("Microphone input unavailable; continuing without audio")
+            return
+        }
+        audioCaptureSession.addInput(micInput)
+
+        let output = AVCaptureAudioDataOutput()
+        output.setSampleBufferDelegate(self, queue: audioQueue)
+        guard audioCaptureSession.canAddOutput(output) else {
+            logger.warning("Microphone output unavailable; continuing without audio")
+            return
+        }
+        audioCaptureSession.addOutput(output)
+    }
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard sampleBuffer.isValid, sampleBuffer.numSamples > 0 else { return }
+        let pts = sampleBuffer.presentationTimeStamp
+
+        writerQueue.async { [weak self] in
+            guard let self,
+                  self.sessionStarted,
+                  let firstSampleTime = self.firstSampleTime,
+                  pts >= firstSampleTime,
+                  let input = self.audioInput,
+                  input.isReadyForMoreMediaData else { return }
+
+            if !input.append(sampleBuffer) {
+                self.logger.error("Audio sample append failed: \(self.assetWriter?.error?.localizedDescription ?? "unknown")")
             }
         }
     }

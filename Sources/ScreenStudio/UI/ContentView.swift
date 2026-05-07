@@ -7,7 +7,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if !permissions.screenRecordingGranted || !permissions.accessibilityGranted {
+            if !permissions.screenRecordingGranted
+                || !permissions.accessibilityGranted
+                || !permissions.microphoneGranted {
                 PermissionsView()
                     .padding(40)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

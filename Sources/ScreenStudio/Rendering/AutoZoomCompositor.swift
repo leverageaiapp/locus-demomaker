@@ -23,14 +23,29 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
     let keyframes: [ZoomKeyframe]
     let videoSize: CGSize
     let frameRate: Int
+    let screenTrackID: CMPersistentTrackID
+    let cameraTrackID: CMPersistentTrackID?
+    let cameraOverlayPosition: CameraOverlayPosition
+    let cameraOverlaySizeRatio: CGFloat
+    let cameraOverlayCenter: CGPoint?
 
     init(timeRange: CMTimeRange, sourceTrackIDs: [CMPersistentTrackID],
-         keyframes: [ZoomKeyframe], videoSize: CGSize, frameRate: Int) {
+         screenTrackID: CMPersistentTrackID,
+         cameraTrackID: CMPersistentTrackID?,
+         keyframes: [ZoomKeyframe], videoSize: CGSize, frameRate: Int,
+         cameraOverlayPosition: CameraOverlayPosition = .bottomRight,
+         cameraOverlaySizeRatio: CGFloat = 0.18,
+         cameraOverlayCenter: CGPoint? = nil) {
         self.timeRange = timeRange
         self.requiredSourceTrackIDs = sourceTrackIDs.map { NSNumber(value: Int($0)) }
+        self.screenTrackID = screenTrackID
+        self.cameraTrackID = cameraTrackID
         self.keyframes = keyframes
         self.videoSize = videoSize
         self.frameRate = frameRate
+        self.cameraOverlayPosition = cameraOverlayPosition
+        self.cameraOverlaySizeRatio = cameraOverlaySizeRatio
+        self.cameraOverlayCenter = cameraOverlayCenter
         super.init()
     }
 }
@@ -85,8 +100,7 @@ final class AutoZoomCompositor: NSObject, AVVideoCompositing {
             throw NSError(domain: "AutoZoomCompositor", code: 10,
                           userInfo: [NSLocalizedDescriptionKey: "Wrong instruction type"])
         }
-        guard let sourceTrackIDValue = instruction.requiredSourceTrackIDs?.first as? NSNumber,
-              let sourceBuffer = request.sourceFrame(byTrackID: sourceTrackIDValue.int32Value) else {
+        guard let sourceBuffer = request.sourceFrame(byTrackID: instruction.screenTrackID) else {
             throw NSError(domain: "AutoZoomCompositor", code: 11,
                           userInfo: [NSLocalizedDescriptionKey: "Missing source frame"])
         }
@@ -132,8 +146,121 @@ final class AutoZoomCompositor: NSObject, AVVideoCompositing {
             ci = ci.cropped(to: outputRect)
         }
 
+        if let cameraTrackID = instruction.cameraTrackID,
+           let cameraBuffer = request.sourceFrame(byTrackID: cameraTrackID) {
+            ci = composeCameraBubble(
+                cameraBuffer: cameraBuffer,
+                onto: ci,
+                videoSize: videoSize,
+                position: instruction.cameraOverlayPosition,
+                sizeRatio: instruction.cameraOverlaySizeRatio,
+                normalizedCenter: instruction.cameraOverlayCenter
+            )
+            ci = ci.cropped(to: outputRect)
+        }
+
         ciContext.render(ci, to: outputBuffer, bounds: outputRect, colorSpace: CGColorSpaceCreateDeviceRGB())
         return outputBuffer
+    }
+
+    private func composeCameraBubble(cameraBuffer: CVPixelBuffer,
+                                     onto background: CIImage,
+                                     videoSize: CGSize,
+                                     position: CameraOverlayPosition,
+                                     sizeRatio: CGFloat,
+                                     normalizedCenter: CGPoint?) -> CIImage {
+        let diameter = max(96, min(videoSize.width * sizeRatio, videoSize.height * 0.32))
+        let margin = max(24, diameter * 0.16)
+        let rect: CGRect
+
+        if let normalizedCenter {
+            let centerX = min(1, max(0, normalizedCenter.x)) * videoSize.width
+            let centerYFromTop = min(1, max(0, normalizedCenter.y)) * videoSize.height
+            rect = CGRect(
+                x: min(videoSize.width - diameter - margin,
+                       max(margin, centerX - diameter / 2)),
+                y: min(videoSize.height - diameter - margin,
+                       max(margin, videoSize.height - centerYFromTop - diameter / 2)),
+                width: diameter,
+                height: diameter
+            )
+        } else {
+            switch position {
+            case .bottomRight:
+                rect = CGRect(x: videoSize.width - diameter - margin,
+                              y: margin,
+                              width: diameter, height: diameter)
+            case .bottomLeft:
+                rect = CGRect(x: margin, y: margin, width: diameter, height: diameter)
+            case .topRight:
+                rect = CGRect(x: videoSize.width - diameter - margin,
+                              y: videoSize.height - diameter - margin,
+                              width: diameter, height: diameter)
+            case .topLeft:
+                rect = CGRect(x: margin,
+                              y: videoSize.height - diameter - margin,
+                              width: diameter, height: diameter)
+            }
+        }
+
+        var camera = CIImage(cvPixelBuffer: cameraBuffer)
+        let extent = camera.extent
+        camera = camera.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+
+        // Mirror the presenter bubble so it behaves like a front-camera preview.
+        camera = camera.transformed(by:
+            CGAffineTransform(scaleX: -1, y: 1)
+                .translatedBy(x: -extent.width, y: 0)
+        )
+
+        let scale = max(rect.width / extent.width, rect.height / extent.height)
+        let scaledSize = CGSize(width: extent.width * scale, height: extent.height * scale)
+        let centeredOrigin = CGPoint(
+            x: rect.midX - scaledSize.width / 2,
+            y: rect.midY - scaledSize.height / 2
+        )
+        camera = camera
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            .transformed(by: CGAffineTransform(translationX: centeredOrigin.x, y: centeredOrigin.y))
+            .cropped(to: rect)
+
+        let shadowRect = rect.insetBy(dx: -diameter * 0.08, dy: -diameter * 0.08)
+        let shadow = circleImage(in: shadowRect, color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.24))
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: diameter * 0.045])
+            .cropped(to: shadowRect)
+
+        let border = circleImage(in: rect.insetBy(dx: -3, dy: -3), color: CIColor.white)
+        let mask = circleMask(in: rect)
+        let maskedCamera = camera.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: rect),
+            kCIInputMaskImageKey: mask
+        ])
+
+        return maskedCamera
+            .composited(over: border)
+            .composited(over: shadow)
+            .composited(over: background)
+    }
+
+    private func circleImage(in rect: CGRect, color: CIColor) -> CIImage {
+        let fill = CIImage(color: color).cropped(to: rect)
+        return fill.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: rect),
+            kCIInputMaskImageKey: circleMask(in: rect)
+        ])
+    }
+
+    private func circleMask(in rect: CGRect) -> CIImage {
+        let radius = rect.width / 2
+        let center = CIVector(x: rect.midX, y: rect.midY)
+        let filter = CIFilter(name: "CIRadialGradient", parameters: [
+            "inputCenter": center,
+            "inputRadius0": radius - 1,
+            "inputRadius1": radius,
+            "inputColor0": CIColor.white,
+            "inputColor1": CIColor.clear
+        ])
+        return (filter?.outputImage ?? CIImage(color: .clear)).cropped(to: rect)
     }
 
     /// Binary search for the keyframe whose `.time` is closest to `time`.

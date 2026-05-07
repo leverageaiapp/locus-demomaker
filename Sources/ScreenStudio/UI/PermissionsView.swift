@@ -51,6 +51,24 @@ struct PermissionsView: View {
                         }
                     }
                 )
+                permissionCard(
+                    icon: "mic.fill",
+                    title: "Microphone",
+                    subtitle: "Record narration with the screen.",
+                    granted: permissions.microphoneGranted,
+                    action: {
+                        permissions.requestMicrophone()
+                    }
+                )
+                permissionCard(
+                    icon: "camera.fill",
+                    title: "Camera (Optional)",
+                    subtitle: "Record your presenter bubble when enabled.",
+                    granted: permissions.cameraGranted,
+                    action: {
+                        permissions.requestCamera()
+                    }
+                )
             }
             .frame(maxWidth: 440)
 
@@ -66,6 +84,8 @@ struct PermissionsView: View {
         .frame(maxWidth: .infinity)
         .animation(.snappy, value: permissions.screenRecordingGranted)
         .animation(.snappy, value: permissions.accessibilityGranted)
+        .animation(.snappy, value: permissions.microphoneGranted)
+        .animation(.snappy, value: permissions.cameraGranted)
     }
 
     private func permissionCard(icon: String, title: String, subtitle: String,
