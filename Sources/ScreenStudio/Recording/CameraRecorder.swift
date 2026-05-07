@@ -19,7 +19,7 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var sessionStarted = false
     private(set) var outputURL: URL?
 
-    func start(url: URL) async throws {
+    func start(url: URL, quality: RecordingQuality = .high) async throws {
         self.outputURL = url
         self.sessionStarted = false
 
@@ -33,7 +33,7 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             AVVideoWidthKey: 1280,
             AVVideoHeightKey: 720,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 2_500_000,
+                AVVideoAverageBitRateKey: quality.cameraBitrate,
                 AVVideoExpectedSourceFrameRateKey: 30,
                 AVVideoMaxKeyFrameIntervalKey: 30,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel

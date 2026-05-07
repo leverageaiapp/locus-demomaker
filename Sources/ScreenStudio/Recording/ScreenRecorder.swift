@@ -42,7 +42,8 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
     private(set) var capturedWindowTitle: String?
 
     /// Begin capture against `target`, writing into `url`.
-    func start(target: Target, url: URL, frameRate: Int = 60) async throws {
+    func start(target: Target, url: URL, frameRate: Int = 60,
+               quality: RecordingQuality = .high) async throws {
         self.outputURL = url
         self.frameRate = frameRate
 
@@ -106,7 +107,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
             AVVideoWidthKey: Int(pixelSize.width),
             AVVideoHeightKey: Int(pixelSize.height),
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 12_000_000,
+                AVVideoAverageBitRateKey: quality.screenBitrate(pixelSize: pixelSize, frameRate: frameRate),
                 AVVideoExpectedSourceFrameRateKey: frameRate,
                 AVVideoMaxKeyFrameIntervalKey: frameRate,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel

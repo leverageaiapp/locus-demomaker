@@ -10,8 +10,13 @@ struct RecordingsListView: View {
     @State private var exportingItemID: UUID?
     @State private var pendingDelete: RecordingItem?
     @State private var showDeleteAlert = false
+    @AppStorage("exportVisualMode") private var exportVisualModeRaw = ExportVisualMode.autoZoom.rawValue
 
     private let defaultLimit = 5
+    private var exportVisualMode: ExportVisualMode {
+        get { ExportVisualMode(rawValue: exportVisualModeRaw) ?? .autoZoom }
+        nonmutating set { exportVisualModeRaw = newValue.rawValue }
+    }
 
     var body: some View {
         Group {
@@ -23,7 +28,11 @@ struct RecordingsListView: View {
                         RecordingRow(
                             item: item,
                             isExporting: exportingItemID == item.id,
-                            onExport: { runExport(item) },
+                            exportVisualMode: Binding(
+                                get: { exportVisualMode },
+                                set: { exportVisualMode = $0 }
+                            ),
+                            onExport: { runExport(item, visualMode: exportVisualMode) },
                             onDelete: {
                                 pendingDelete = item
                                 showDeleteAlert = true
@@ -100,7 +109,7 @@ struct RecordingsListView: View {
         showAll ? library.items : Array(library.items.prefix(defaultLimit))
     }
 
-    private func runExport(_ item: RecordingItem) {
+    private func runExport(_ item: RecordingItem, visualMode: ExportVisualMode) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
         panel.nameFieldStringValue = "Locus-DemoMaker-\(Int(Date().timeIntervalSince1970)).mp4"
@@ -110,7 +119,11 @@ struct RecordingsListView: View {
             guard response == .OK, let outURL = panel.url else { return }
             Task {
                 exportingItemID = item.id
-                await exporter.export(recordingDir: item.directory, outputURL: outURL)
+                await exporter.export(
+                    recordingDir: item.directory,
+                    outputURL: outURL,
+                    options: .init(visualMode: visualMode)
+                )
                 // Refresh so the row picks up the new export.json marker and
                 // can flip to the post-export action set.
                 await library.refresh()
@@ -126,6 +139,7 @@ struct RecordingsListView: View {
 private struct RecordingRow: View {
     let item: RecordingItem
     let isExporting: Bool
+    @Binding var exportVisualMode: ExportVisualMode
     let onExport: () -> Void
     let onDelete: () -> Void
     @EnvironmentObject var exporter: VideoExporter
@@ -256,6 +270,8 @@ private struct RecordingRow: View {
 
     private var preExportActions: some View {
         HStack(spacing: 6) {
+            modePill
+
             Button(action: onExport) {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
@@ -263,6 +279,12 @@ private struct RecordingRow: View {
             .controlSize(.small)
 
             secondaryMenu {
+                Picker("Video Mode", selection: $exportVisualMode) {
+                    ForEach(ExportVisualMode.allCases) { mode in
+                        Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+                    }
+                }
+                Divider()
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([item.sourceVideoURL])
                 } label: {
@@ -283,6 +305,8 @@ private struct RecordingRow: View {
 
     private func postExportActions(exported: URL) -> some View {
         HStack(spacing: 6) {
+            modePill
+
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([exported])
             } label: {
@@ -319,6 +343,11 @@ private struct RecordingRow: View {
                     }
                 }
                 Section {
+                    Picker("Video Mode", selection: $exportVisualMode) {
+                        ForEach(ExportVisualMode.allCases) { mode in
+                            Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+                        }
+                    }
                     Button(action: onExport) {
                         Label("Re-export…", systemImage: "square.and.arrow.up.on.square")
                     }
@@ -341,6 +370,19 @@ private struct RecordingRow: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private var modePill: some View {
+        Label(exportVisualMode.displayName, systemImage: exportVisualMode.systemImage)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(0.055))
+            }
     }
 
     private func formatDuration(_ d: Double) -> String {

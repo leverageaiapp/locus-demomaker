@@ -35,19 +35,35 @@ final class RecordingSession: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var availableDisplays: [SCDisplay] = []
     @Published private(set) var availableWindows: [SCWindow] = []
-    @Published var selectedDisplayID: CGDirectDisplayID?
-    @Published var selectedWindowID: CGWindowID?
+    @Published var selectedDisplayID: CGDirectDisplayID? {
+        didSet { clearRecoverableError() }
+    }
+    @Published var selectedWindowID: CGWindowID? {
+        didSet { clearRecoverableError() }
+    }
 
     @Published var captureMode: CaptureMode = .fullDisplay {
-        didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: Self.modeKey) }
+        didSet {
+            UserDefaults.standard.set(captureMode.rawValue, forKey: Self.modeKey)
+            clearRecoverableError()
+        }
     }
     @Published var preferredRegion: CaptureRegion = .defaultCentered(
         displayPointSize: CGSize(width: 1440, height: 900)
     ) {
-        didSet { persistRegion() }
+        didSet {
+            persistRegion()
+            clearRecoverableError()
+        }
     }
     @Published var includeCamera: Bool = true {
-        didSet { UserDefaults.standard.set(includeCamera, forKey: Self.includeCameraKey) }
+        didSet {
+            UserDefaults.standard.set(includeCamera, forKey: Self.includeCameraKey)
+            clearRecoverableError()
+        }
+    }
+    @Published var recordingQuality: RecordingQuality = .high {
+        didSet { UserDefaults.standard.set(recordingQuality.rawValue, forKey: Self.recordingQualityKey) }
     }
 
     @Published private(set) var lastRecordingDirectory: URL?
@@ -62,6 +78,7 @@ final class RecordingSession: ObservableObject {
     private static let modeKey = "captureMode"
     private static let regionKey = "preferredRegion"
     private static let includeCameraKey = "includeCamera"
+    private static let recordingQualityKey = "recordingQuality"
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: Self.modeKey),
@@ -75,11 +92,21 @@ final class RecordingSession: ObservableObject {
         if UserDefaults.standard.object(forKey: Self.includeCameraKey) != nil {
             self.includeCamera = UserDefaults.standard.bool(forKey: Self.includeCameraKey)
         }
+        if let raw = UserDefaults.standard.string(forKey: Self.recordingQualityKey),
+           let quality = RecordingQuality(rawValue: raw) {
+            self.recordingQuality = quality
+        }
     }
 
     private func persistRegion() {
         if let data = try? JSONEncoder().encode(preferredRegion) {
             UserDefaults.standard.set(data, forKey: Self.regionKey)
+        }
+    }
+
+    private func clearRecoverableError() {
+        if case .error = state {
+            state = .idle
         }
     }
 
@@ -270,7 +297,12 @@ final class RecordingSession: ObservableObject {
     // MARK: Start / stop
 
     func startRecording() async {
-        guard case .idle = state else { return }
+        switch state {
+        case .idle, .error:
+            break
+        default:
+            return
+        }
         state = .preparing
         await loadDisplays()
 
@@ -326,9 +358,9 @@ final class RecordingSession: ObservableObject {
                     state = .error("Camera permission needed for Face Camera.")
                     return
                 }
-                try await cameraRecorder.start(url: cameraURL)
+                try await cameraRecorder.start(url: cameraURL, quality: recordingQuality)
             }
-            try await recorder.start(target: target, url: videoURL, frameRate: 60)
+            try await recorder.start(target: target, url: videoURL, frameRate: 60, quality: recordingQuality)
             // MouseTracker uses the captured surface origin (already global points)
             // and the surface scale — same logic for all 3 modes.
             guard mouseTracker.start(
@@ -377,7 +409,8 @@ final class RecordingSession: ObservableObject {
                 cameraOverlayPosition: cameraURL == nil ? nil : .bottomRight,
                 cameraOverlaySizeRatio: cameraURL == nil ? nil : 0.18,
                 cameraOverlayCenterX: nil,
-                cameraOverlayCenterY: nil
+                cameraOverlayCenterY: nil,
+                recordingQuality: recordingQuality
             )
             let metaURL = dir.appendingPathComponent("metadata.json")
             let encoder = JSONEncoder()

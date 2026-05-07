@@ -45,6 +45,12 @@ struct RecordingMetadata: Codable, Sendable {
     let cameraOverlayCenterX: CGFloat?
     let cameraOverlayCenterY: CGFloat?
 
+    // MARK: New in v0.4
+
+    /// Recording quality used for the raw screen/camera files. Optional so old
+    /// recordings decode without migration.
+    let recordingQuality: RecordingQuality?
+
     var pixelSize: CGSize { CGSize(width: pixelWidth, height: pixelHeight) }
 
     /// Effective mode — falls back to fullDisplay for legacy records.
@@ -60,4 +66,65 @@ enum CameraOverlayPosition: String, Codable, Sendable {
     case bottomLeft
     case topRight
     case topLeft
+}
+
+enum ExportVisualMode: String, CaseIterable, Identifiable, Codable, Sendable {
+    case fullFrame
+    case autoZoom
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .autoZoom: return "Auto Zoom"
+        case .fullFrame: return "Full Frame"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .autoZoom: return "scope"
+        case .fullFrame: return "rectangle"
+        }
+    }
+}
+
+enum RecordingQuality: String, CaseIterable, Identifiable, Codable, Sendable {
+    case standard
+    case high
+    case ultra
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .standard: return "Standard"
+        case .high: return "High"
+        case .ultra: return "Ultra"
+        }
+    }
+
+    var screenBitratePer1080p60: Int {
+        switch self {
+        case .standard: return 12_000_000
+        case .high: return 24_000_000
+        case .ultra: return 45_000_000
+        }
+    }
+
+    var cameraBitrate: Int {
+        switch self {
+        case .standard: return 2_500_000
+        case .high: return 5_000_000
+        case .ultra: return 8_000_000
+        }
+    }
+
+    func screenBitrate(pixelSize: CGSize, frameRate: Int) -> Int {
+        let referencePixels = 1920.0 * 1080.0
+        let pixels = max(1.0, Double(pixelSize.width * pixelSize.height))
+        let frameRateScale = Double(max(frameRate, 1)) / 60.0
+        let scaled = Double(screenBitratePer1080p60) * pixels / referencePixels * frameRateScale
+        return max(screenBitratePer1080p60, Int(scaled.rounded()))
+    }
 }

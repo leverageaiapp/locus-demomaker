@@ -20,8 +20,13 @@ final class VideoExporter: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     private var progressTimer: Timer?
 
+    struct ExportOptions: Sendable {
+        var visualMode: ExportVisualMode = .autoZoom
+    }
+
     /// `recordingDir` is what `RecordingSession.stopRecording()` returned.
     func export(recordingDir: URL, outputURL: URL,
+                options: ExportOptions = .init(),
                 config: ZoomKeyframeEngine.Config = .init()) async {
         phase = .loading
         let videoURL = recordingDir.appendingPathComponent("source.mp4")
@@ -52,24 +57,37 @@ final class VideoExporter: ObservableObject {
             }
 
             do {
-                let duration = try await asset.load(.duration)
                 let videoTracks = try await asset.loadTracks(withMediaType: .video)
                 let audioTracks = try await asset.loadTracks(withMediaType: .audio)
             guard let videoTrack = videoTracks.first else {
                 phase = .failed("No video track in source")
                 return
             }
+            let videoTimeRange = try await videoTrack.load(.timeRange)
+            let duration = videoTimeRange.duration
             let durationSeconds = CMTimeGetSeconds(duration)
             let videoSize = metadata.pixelSize
 
-            // Build keyframes.
-            let engine = ZoomKeyframeEngine(config: config)
-            let keyframes = engine.generate(
-                events: metadata.mouseEvents,
-                duration: durationSeconds,
-                frameRate: metadata.frameRate,
-                videoSize: videoSize
-            )
+            // Build keyframes. Full-frame mode keeps the screen track perfectly
+            // still while the compositor continues adding cursor effects and
+            // the fixed camera bubble.
+            let keyframes: [ZoomKeyframe]
+            switch options.visualMode {
+            case .autoZoom:
+                let engine = ZoomKeyframeEngine(config: config)
+                keyframes = engine.generate(
+                    events: metadata.mouseEvents,
+                    duration: durationSeconds,
+                    frameRate: metadata.frameRate,
+                    videoSize: videoSize
+                )
+            case .fullFrame:
+                keyframes = Self.fullFrameKeyframes(
+                    duration: durationSeconds,
+                    frameRate: metadata.frameRate,
+                    videoSize: videoSize
+                )
+            }
 
             // Build cursor renderer (shared with compositor through static var).
             let cursor = CursorRenderer.make(
@@ -90,7 +108,7 @@ final class VideoExporter: ObservableObject {
                 return
             }
             try compTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: duration),
+                CMTimeRange(start: videoTimeRange.start, duration: duration),
                 of: videoTrack, at: .zero
             )
             if let audioTrack = audioTracks.first,
@@ -98,8 +116,12 @@ final class VideoExporter: ObservableObject {
                 withMediaType: .audio,
                 preferredTrackID: kCMPersistentTrackID_Invalid
                ) {
+                let audioTimeRange = try await audioTrack.load(.timeRange)
+                let audioDuration = CMTimeCompare(audioTimeRange.duration, duration) < 0
+                    ? audioTimeRange.duration
+                    : duration
                 try compAudioTrack.insertTimeRange(
-                    CMTimeRange(start: .zero, duration: duration),
+                    CMTimeRange(start: audioTimeRange.start, duration: audioDuration),
                     of: audioTrack,
                     at: .zero
                 )
@@ -113,10 +135,11 @@ final class VideoExporter: ObservableObject {
                     withMediaType: .video,
                     preferredTrackID: kCMPersistentTrackID_Invalid
                     ) {
-                    let cameraDuration = try await cameraAsset.load(.duration)
+                    let cameraTimeRange = try await cameraSourceTrack.load(.timeRange)
+                    let cameraDuration = cameraTimeRange.duration
                     let insertDuration = CMTimeCompare(cameraDuration, duration) < 0 ? cameraDuration : duration
                     try cameraCompTrack.insertTimeRange(
-                        CMTimeRange(start: .zero, duration: insertDuration),
+                        CMTimeRange(start: cameraTimeRange.start, duration: insertDuration),
                         of: cameraSourceTrack,
                         at: .zero
                     )
@@ -208,5 +231,20 @@ final class VideoExporter: ObservableObject {
     private func stopProgressPolling() {
         progressTimer?.invalidate()
         progressTimer = nil
+    }
+
+    private static func fullFrameKeyframes(duration: Double, frameRate: Int,
+                                           videoSize: CGSize) -> [ZoomKeyframe] {
+        let safeFrameRate = max(frameRate, 1)
+        let dt = 1.0 / Double(safeFrameRate)
+        let frameCount = max(1, Int((duration / dt).rounded()))
+        let centerX = Double(videoSize.width / 2)
+        let centerY = Double(videoSize.height / 2)
+        return (0..<frameCount).map { frame in
+            ZoomKeyframe(time: Double(frame) * dt,
+                         focusX: centerX,
+                         focusY: centerY,
+                         zoom: 1.0)
+        }
     }
 }

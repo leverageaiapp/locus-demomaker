@@ -11,9 +11,15 @@ struct RecordingHeroView: View {
     @State private var elapsed: TimeInterval = 0
     @State private var timer: Timer?
     @State private var hideCameraPreviewWhileStarting = false
+    @AppStorage("exportVisualMode") private var exportVisualModeRaw = ExportVisualMode.autoZoom.rawValue
     /// Suppresses the auto-open behavior on the very first appearance, when the
     /// captureMode is just being restored from UserDefaults.
     @State private var didApplyInitialMode = false
+
+    private var exportVisualMode: ExportVisualMode {
+        get { ExportVisualMode(rawValue: exportVisualModeRaw) ?? .autoZoom }
+        nonmutating set { exportVisualModeRaw = newValue.rawValue }
+    }
 
     var body: some View {
         VStack(spacing: 18) {
@@ -108,14 +114,18 @@ struct RecordingHeroView: View {
             VStack(spacing: 10) {
                 Text("Start Recording")
                     .font(.title2.weight(.semibold))
-                Text("Auto-zoom follows your cursor while you work.")
+                Text(processingCaption)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 320)
                 modeSegmented
                 modeDetail
-                cameraToggle
+                processingSegmented
+                HStack(spacing: 14) {
+                    cameraToggle
+                    qualityPicker
+                }
                 if session.includeCamera && !hideCameraPreviewWhileStarting {
                     cameraPositioner
                 }
@@ -143,6 +153,28 @@ struct RecordingHeroView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(maxWidth: 280)
+    }
+
+    private var processingSegmented: some View {
+        Picker("Processing", selection: Binding(
+            get: { exportVisualMode },
+            set: { exportVisualMode = $0 }
+        )) {
+            ForEach(ExportVisualMode.allCases) { mode in
+                Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(maxWidth: 280)
+    }
+
+    private var processingCaption: String {
+        switch exportVisualMode {
+        case .fullFrame:
+            return "Full frame keeps the screen still; clicks and camera are added on export."
+        case .autoZoom:
+            return "Auto Zoom follows your cursor while clicks and camera stay layered on top."
+        }
     }
 
     @ViewBuilder
@@ -226,6 +258,18 @@ struct RecordingHeroView: View {
         .controlSize(.small)
         .font(.callout)
         .foregroundStyle(.secondary)
+        .fixedSize()
+    }
+
+    private var qualityPicker: some View {
+        Picker("Quality", selection: $session.recordingQuality) {
+            ForEach(RecordingQuality.allCases) { quality in
+                Text(quality.displayName).tag(quality)
+            }
+        }
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .font(.callout)
         .fixedSize()
     }
 
