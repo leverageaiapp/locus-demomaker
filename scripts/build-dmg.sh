@@ -59,6 +59,22 @@ mkdir -p "$STAGE"
 cp -R "$APP_PATH" "$STAGE/$DISPLAY_NAME.app"
 ln -s /Applications "$STAGE/Applications"
 
+# The build above runs with signing disabled, which leaves a bundle whose
+# linker-generated signature doesn't cover its resources — Gatekeeper rejects
+# that outright on Apple Silicon. Re-sign the staged bundle so it carries a
+# consistent signature: Developer ID when available, ad-hoc otherwise.
+echo "→ Signing staged app…"
+DIST_IDENTITY="$(
+  security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application/ { print $2; exit }'
+)"
+codesign --force --deep --sign "${DIST_IDENTITY:--}" \
+  --options runtime \
+  --entitlements Sources/ScreenStudio/ScreenStudio.entitlements \
+  "$STAGE/$DISPLAY_NAME.app"
+codesign --verify --strict "$STAGE/$DISPLAY_NAME.app"
+echo "  signed with: ${DIST_IDENTITY:-ad-hoc}"
+
 echo "→ Packaging DMG…"
 mkdir -p "$(dirname "$DMG_NAME")"
 rm -f "$DMG_NAME"
