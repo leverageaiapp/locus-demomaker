@@ -52,6 +52,7 @@ final class Localization: ObservableObject {
         // ── RecordingHeroView ──
         "Start Recording": "开始录制",
         "Click the button to stop": "点击按钮停止",
+        "Stopping & saving…": "正在停止并保存…",
         "Full frame keeps the screen still; clicks and camera are added on export.":
             "全画幅保持画面静止；点击效果和摄像头在导出时叠加。",
         "Auto Zoom follows your cursor while clicks and camera stay layered on top.":

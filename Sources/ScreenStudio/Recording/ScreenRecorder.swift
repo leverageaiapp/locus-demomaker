@@ -21,6 +21,9 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
     private let videoQueue = DispatchQueue(label: "com.screenstudio.video", qos: .userInteractive)
     private let audioQueue = DispatchQueue(label: "com.screenstudio.audio", qos: .userInteractive)
     private let writerQueue = DispatchQueue(label: "com.screenstudio.writer", qos: .userInteractive)
+    /// start/stopRunning block until in-flight delegate callbacks finish, so
+    /// they must not share `audioQueue` with the delegate or they can stall.
+    private let sessionControlQueue = DispatchQueue(label: "com.screenstudio.audio.control", qos: .userInitiated)
 
     private var sessionStarted = false
     private var firstSampleTime: CMTime?
@@ -164,7 +167,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
         let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
         try configureMicrophoneCapture()
-        audioQueue.async { [weak self] in
+        sessionControlQueue.async { [weak self] in
             self?.audioCaptureSession.startRunning()
         }
         try await stream.startCapture()
@@ -178,14 +181,25 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
             throw NSError(domain: "ScreenRecorder", code: 3,
                           userInfo: [NSLocalizedDescriptionKey: "Recorder not running"])
         }
+        let stopStart = Date()
         try? await stream.stopCapture()
+        logger.info("stopCapture took \(Int(-stopStart.timeIntervalSinceNow * 1000)) ms")
         self.stream = nil
-        audioQueue.async { [weak self] in
+        sessionControlQueue.async { [weak self] in
             self?.audioCaptureSession.stopRunning()
         }
 
-        return await withCheckedContinuation { (cont: CheckedContinuation<URL, Never>) in
+        let finishStart = Date()
+        let result: URL = await withCheckedContinuation { (cont: CheckedContinuation<URL, Never>) in
             writerQueue.async {
+                // finishWriting only invokes its handler from the .writing
+                // state — resuming directly otherwise keeps stop() from
+                // hanging forever after a mid-recording writer failure.
+                guard writer.status == .writing else {
+                    self.logger.error("Writer not in .writing state at stop (status \(writer.status.rawValue)): \(writer.error?.localizedDescription ?? "no error")")
+                    cont.resume(returning: url)
+                    return
+                }
                 input.markAsFinished()
                 self.audioInput?.markAsFinished()
                 writer.finishWriting {
@@ -193,6 +207,8 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
                 }
             }
         }
+        logger.info("finishWriting took \(Int(-finishStart.timeIntervalSinceNow * 1000)) ms")
+        return result
     }
 
     // MARK: - SCStreamOutput

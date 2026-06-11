@@ -42,15 +42,36 @@ final class CursorRenderer {
         var positions = [CGPoint](repeating: CGPoint(x: videoSize.width / 2, y: videoSize.height / 2),
                                   count: frameCount)
         let sorted = events.sorted { $0.time < $1.time }
-        var idx = 0
-        var last = CGPoint(x: videoSize.width / 2, y: videoSize.height / 2)
-        for f in 0..<frameCount {
-            let t = Double(f) * dt
-            while idx < sorted.count && sorted[idx].time <= t {
-                last = CGPoint(x: sorted[idx].x, y: sorted[idx].y)
-                idx += 1
+
+        // Only events that carry a real cursor position. keyDown events are
+        // stamped at (0,0) by design — letting them through teleported the
+        // rendered cursor to the top-left corner whenever the user typed.
+        let posEvents = sorted.filter { $0.kind != .keyDown }
+
+        if !posEvents.isEmpty {
+            // Linear interpolation between adjacent events for smooth 60 fps
+            // motion; gaps longer than `maxGap` mean the mouse sat still, so
+            // hold rather than glide.
+            let maxGap = 0.25
+            var pi = 0
+            for f in 0..<frameCount {
+                let t = Double(f) * dt
+                while pi + 1 < posEvents.count && posEvents[pi + 1].time <= t {
+                    pi += 1
+                }
+                let p0 = posEvents[pi]
+                if t >= p0.time, pi + 1 < posEvents.count {
+                    let p1 = posEvents[pi + 1]
+                    let span = p1.time - p0.time
+                    if span > 0 && span <= maxGap {
+                        let r = min(1, max(0, (t - p0.time) / span))
+                        positions[f] = CGPoint(x: p0.x + (p1.x - p0.x) * r,
+                                               y: p0.y + (p1.y - p0.y) * r)
+                        continue
+                    }
+                }
+                positions[f] = CGPoint(x: p0.x, y: p0.y)
             }
-            positions[f] = last
         }
 
         let clicks = sorted.compactMap { evt -> Click? in

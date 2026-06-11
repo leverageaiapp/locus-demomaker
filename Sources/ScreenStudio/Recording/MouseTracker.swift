@@ -7,7 +7,14 @@ import CoreGraphics
 final class MouseTracker {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    /// The tap runs on its own thread's runloop. On the main runloop, UI work
+    /// (recording timer, animations) starves the tap and macOS coalesces
+    /// mouse-moved events down to a few per second — which made the exported
+    /// cursor and camera path visibly choppy.
+    private var tapThread: Thread?
+    private var tapRunLoop: CFRunLoop?
     private var startMachTime: UInt64 = 0
+    private var startUptime: TimeInterval = 0
     private var displayOrigin: CGPoint = .zero
     private var displayScale: CGFloat = 1.0
     private let lock = NSLock()
@@ -21,6 +28,7 @@ final class MouseTracker {
         self.displayOrigin = displayOrigin
         self.displayScale = displayScale
         self.startMachTime = mach_absolute_time()
+        self.startUptime = ProcessInfo.processInfo.systemUptime
 
         // Built via reduce so Swift's type-checker doesn't choke on the
         // long left-shift OR chain (Xcode 16.x errors out with
@@ -41,6 +49,14 @@ final class MouseTracker {
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
             let tracker = Unmanaged<MouseTracker>.fromOpaque(refcon).takeUnretainedValue()
+            // macOS disables a tap it considers slow; re-enable and keep going
+            // instead of silently losing the rest of the recording.
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if let tap = tracker.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+                return Unmanaged.passUnretained(event)
+            }
             tracker.handle(type: type, event: event)
             return Unmanaged.passUnretained(event)
         }
@@ -57,11 +73,27 @@ final class MouseTracker {
         }
 
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-
         self.eventTap = tap
         self.runLoopSource = source
+
+        // Dedicated thread so UI load can never starve event delivery.
+        let ready = DispatchSemaphore(value: 0)
+        let thread = Thread { [weak self] in
+            guard let self, let source = self.runLoopSource else {
+                ready.signal()
+                return
+            }
+            self.tapRunLoop = CFRunLoopGetCurrent()
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            ready.signal()
+            CFRunLoopRun()
+        }
+        thread.name = "com.screenstudio.mousetap"
+        thread.qualityOfService = .userInteractive
+        self.tapThread = thread
+        thread.start()
+        _ = ready.wait(timeout: .now() + 2)
         return true
     }
 
@@ -69,13 +101,18 @@ final class MouseTracker {
     func stop() -> [MouseEvent] {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
-            if let src = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
+            if let src = runLoopSource, let rl = tapRunLoop {
+                CFRunLoopRemoveSource(rl, src, .commonModes)
             }
             CFMachPortInvalidate(tap)
         }
+        if let rl = tapRunLoop {
+            CFRunLoopStop(rl)
+        }
         eventTap = nil
         runLoopSource = nil
+        tapRunLoop = nil
+        tapThread = nil
         return drain()
     }
 
@@ -87,8 +124,16 @@ final class MouseTracker {
     }
 
     private func handle(type: CGEventType, event: CGEvent) {
-        let now = mach_absolute_time()
-        let elapsed = Self.machTimeToSeconds(now &- startMachTime)
+        // Use the event's own occurrence time, not the callback's. The tap
+        // runs on the main runloop — when the UI is busy, callbacks arrive
+        // late and bunched, and stamping them at callback time makes the
+        // exported cursor look sticky and unresponsive.
+        let elapsed: Double
+        if let nsEvent = NSEvent(cgEvent: event) {
+            elapsed = nsEvent.timestamp - startUptime
+        } else {
+            elapsed = Self.machTimeToSeconds(mach_absolute_time() &- startMachTime)
+        }
         let location = event.location // global screen coordinates, points
 
         // Convert to display-local pixel coordinates.

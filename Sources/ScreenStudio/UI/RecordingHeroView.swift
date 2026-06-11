@@ -139,6 +139,14 @@ struct RecordingHeroView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        } else if case .stopping = session.state {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(loc.t("Stopping & saving…"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 8)
         } else {
             VStack(spacing: 10) {
                 Text(loc.t("Start Recording"))
@@ -464,11 +472,17 @@ private struct CameraPreview: NSViewRepresentable {
 private final class CameraPreviewView: NSView, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.screenstudio.camera.preview", qos: .userInitiated)
+    /// start/stopRunning block until in-flight delegate callbacks finish, so
+    /// they get their own queue instead of sharing the delegate's.
+    private let sessionControlQueue = DispatchQueue(label: "com.screenstudio.camera.preview.control", qos: .userInitiated)
     private var configured = false
     private let ciContext = CIContext()
 
     private let backdropLock = NSLock()
     private var _backdrop: BackdropColor?
+    /// True while a rendered frame is waiting for the main thread to display
+    /// it; new frames are dropped instead of queueing behind it.
+    private var _frameInFlight = false
     /// Read on the capture queue, written from the main thread.
     var backdrop: BackdropColor? {
         get { backdropLock.lock(); defer { backdropLock.unlock() }; return _backdrop }
@@ -509,7 +523,7 @@ private final class CameraPreviewView: NSView, AVCaptureVideoDataOutputSampleBuf
     }
 
     func stop() {
-        queue.async { [session] in
+        sessionControlQueue.async { [session] in
             if session.isRunning {
                 session.stopRunning()
             }
@@ -520,7 +534,7 @@ private final class CameraPreviewView: NSView, AVCaptureVideoDataOutputSampleBuf
         if !configured {
             configure()
         }
-        queue.async { [session] in
+        sessionControlQueue.async { [session] in
             if !session.isRunning {
                 session.startRunning()
             }
@@ -555,34 +569,58 @@ private final class CameraPreviewView: NSView, AVCaptureVideoDataOutputSampleBuf
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        var image = CIImage(cvPixelBuffer: buffer)
-        let rect = image.extent
+        // Drop the frame if the previous one hasn't reached the screen yet —
+        // the bubble is tiny, the main thread must never queue uploads.
+        backdropLock.lock()
+        let busy = _frameInFlight
+        if !busy { _frameInFlight = true }
+        backdropLock.unlock()
+        guard !busy, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        if let backdrop,
-           (try? VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
-               .perform([segmentationRequest])) != nil,
-           let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
-            let mask = CIImage(cvPixelBuffer: maskBuffer)
-            let scaledMask = mask.transformed(by: CGAffineTransform(
-                scaleX: rect.width / max(1, mask.extent.width),
-                y: rect.height / max(1, mask.extent.height)
-            ))
-            let solid = CIImage(color: backdrop.ciColor).cropped(to: rect)
-            image = image.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: solid,
-                kCIInputMaskImageKey: scaledMask
-            ])
-        }
+        autoreleasepool {
+            var image = CIImage(cvPixelBuffer: buffer)
+            let rect = image.extent
 
-        // Mirror like a selfie preview (matches the exported bubble).
-        image = image.transformed(by:
-            CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -rect.width, y: 0)
-        )
+            if let backdrop,
+               (try? VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
+                   .perform([segmentationRequest])) != nil,
+               let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
+                let mask = CIImage(cvPixelBuffer: maskBuffer)
+                let scaledMask = mask.transformed(by: CGAffineTransform(
+                    scaleX: rect.width / max(1, mask.extent.width),
+                    y: rect.height / max(1, mask.extent.height)
+                ))
+                let solid = CIImage(color: backdrop.ciColor).cropped(to: rect)
+                image = image.applyingFilter("CIBlendWithMask", parameters: [
+                    kCIInputBackgroundImageKey: solid,
+                    kCIInputMaskImageKey: scaledMask
+                ])
+            }
 
-        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.layer?.contents = cgImage
+            // Mirror like a selfie preview (matches the exported bubble).
+            image = image.transformed(by:
+                CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -rect.width, y: 0)
+            )
+
+            // The bubble renders at ≤ ~160 px — downscale so the CGImage the
+            // main thread has to copy into Core Animation stays tiny.
+            let targetMax: CGFloat = 256
+            let downscale = min(1, targetMax / max(rect.width, rect.height))
+            if downscale < 1 {
+                image = image.transformed(by: CGAffineTransform(scaleX: downscale, y: downscale))
+            }
+
+            guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
+                backdropLock.lock(); _frameInFlight = false; backdropLock.unlock()
+                return
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.layer?.contents = cgImage
+                guard let self else { return }
+                self.backdropLock.lock()
+                self._frameInFlight = false
+                self.backdropLock.unlock()
+            }
         }
     }
 }

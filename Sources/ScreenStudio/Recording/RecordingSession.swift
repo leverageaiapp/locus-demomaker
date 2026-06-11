@@ -388,8 +388,14 @@ final class RecordingSession: ObservableObject {
         state = .stopping
         let events = mouseTracker.stop()
         do {
-            let videoURL = try await recorder.stop()
-            let cameraURL = await cameraRecorder.stop()
+            // Screen and camera writers flush independently — finalize both
+            // at once instead of paying the two finishWriting waits in series.
+            let stopStart = Date()
+            async let screenStop = recorder.stop()
+            async let cameraStop = cameraRecorder.stop()
+            let videoURL = try await screenStop
+            let cameraURL = await cameraStop
+            logger.info("Recorder stop stage took \(Int(-stopStart.timeIntervalSinceNow * 1000)) ms")
             guard let dir = lastRecordingDirectory else { return nil }
             let metadata = RecordingMetadata(
                 id: UUID(),

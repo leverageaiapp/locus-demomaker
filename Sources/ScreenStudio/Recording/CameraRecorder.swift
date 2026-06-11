@@ -13,6 +13,9 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let session = AVCaptureSession()
     private let captureQueue = DispatchQueue(label: "com.screenstudio.camera.capture", qos: .userInteractive)
     private let writerQueue = DispatchQueue(label: "com.screenstudio.camera.writer", qos: .userInteractive)
+    /// start/stopRunning block until in-flight delegate callbacks finish, so
+    /// they must not share `captureQueue` with the delegate or stop stalls.
+    private let sessionControlQueue = DispatchQueue(label: "com.screenstudio.camera.control", qos: .userInitiated)
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -55,7 +58,7 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         try configureSession()
         await withCheckedContinuation { cont in
-            captureQueue.async { [weak self] in
+            sessionControlQueue.async { [weak self] in
                 self?.session.startRunning()
                 cont.resume()
             }
@@ -69,7 +72,7 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let url = outputURL
 
         await withCheckedContinuation { cont in
-            captureQueue.async { [weak self] in
+            sessionControlQueue.async { [weak self] in
                 self?.session.stopRunning()
                 cont.resume()
             }
