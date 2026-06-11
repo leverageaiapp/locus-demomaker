@@ -6,6 +6,7 @@ struct ScreenStudioApp: App {
     @StateObject private var session = RecordingSession()
     @StateObject private var exporter = VideoExporter()
     @StateObject private var library = RecordingsLibrary()
+    @StateObject private var loc = Localization()
 
     var body: some Scene {
         WindowGroup("Locus DemoMaker") {
@@ -14,6 +15,7 @@ struct ScreenStudioApp: App {
                 .environmentObject(session)
                 .environmentObject(exporter)
                 .environmentObject(library)
+                .environmentObject(loc)
                 .frame(minWidth: 580, minHeight: 640)
                 .background(WindowBackground().ignoresSafeArea())
         }

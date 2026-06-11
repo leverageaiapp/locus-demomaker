@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var permissions: PermissionsManager
     @EnvironmentObject var session: RecordingSession
     @EnvironmentObject var library: RecordingsLibrary
+    @EnvironmentObject var loc: Localization
 
     var body: some View {
         Group {
@@ -14,16 +15,19 @@ struct ContentView: View {
                     .padding(40)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    VStack(spacing: 28) {
-                        RecordingHeroView()
-                        recordingsSection
+                ZStack(alignment: .top) {
+                    ambientBackdrop
+                    ScrollView {
+                        VStack(spacing: 28) {
+                            RecordingHeroView()
+                            recordingsSection
+                        }
+                        .padding(.horizontal, 28)
+                        .padding(.top, 20)
+                        .padding(.bottom, 36)
                     }
-                    .padding(.horizontal, 28)
-                    .padding(.top, 20)
-                    .padding(.bottom, 36)
+                    .scrollContentBackground(.hidden)
                 }
-                .scrollContentBackground(.hidden)
             }
         }
         .toolbar {
@@ -33,11 +37,26 @@ struct ContentView: View {
                         Image(systemName: "record.circle.fill")
                             .symbolEffect(.pulse)
                             .foregroundStyle(.red)
-                        Text("Recording")
+                        Text(loc.t("Recording"))
                             .foregroundStyle(.secondary)
                     }
                     .font(.callout)
                 }
+            }
+            ToolbarItem(placement: .automatic) {
+                Menu {
+                    Picker(loc.t("Language"), selection: $loc.language) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } label: {
+                    Image(systemName: "globe")
+                }
+                .menuIndicator(.hidden)
+                .help(loc.t("Language"))
             }
         }
         .task {
@@ -49,10 +68,25 @@ struct ContentView: View {
         .animation(.snappy, value: permissions.accessibilityGranted)
     }
 
+    /// Soft color wash behind the content — indigo at rest, warms to red
+    /// while a recording is in flight so the whole window signals state.
+    private var ambientBackdrop: some View {
+        LinearGradient(
+            colors: [
+                (session.isRecording ? Color.red : Color.indigo)
+                    .opacity(session.isRecording ? 0.10 : 0.07),
+                .clear
+            ],
+            startPoint: .top, endPoint: .center
+        )
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.6), value: session.isRecording)
+    }
+
     private var recordingsSection: some View {
         VStack(spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Recent Recordings")
+                Text(loc.t("Recent Recordings"))
                     .font(.title3.weight(.semibold))
                 Spacer()
                 Button {
@@ -63,7 +97,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .help("Refresh")
+                .help(loc.t("Refresh"))
             }
             RecordingsListView()
         }

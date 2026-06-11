@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreImage
 import CoreVideo
+import Vision
 
 /// Per-frame instruction the compositor consults — produced by ZoomKeyframeEngine
 /// and stored on `AutoZoomCompositionInstruction`.
@@ -28,6 +29,9 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
     let cameraOverlayPosition: CameraOverlayPosition
     let cameraOverlaySizeRatio: CGFloat
     let cameraOverlayCenter: CGPoint?
+    /// When set, the presenter is segmented out of the camera frame and this
+    /// solid color is painted behind them.
+    let cameraBackdrop: BackdropColor?
 
     init(timeRange: CMTimeRange, sourceTrackIDs: [CMPersistentTrackID],
          screenTrackID: CMPersistentTrackID,
@@ -35,7 +39,8 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
          keyframes: [ZoomKeyframe], videoSize: CGSize, frameRate: Int,
          cameraOverlayPosition: CameraOverlayPosition = .bottomRight,
          cameraOverlaySizeRatio: CGFloat = 0.18,
-         cameraOverlayCenter: CGPoint? = nil) {
+         cameraOverlayCenter: CGPoint? = nil,
+         cameraBackdrop: BackdropColor? = nil) {
         self.timeRange = timeRange
         self.requiredSourceTrackIDs = sourceTrackIDs.map { NSNumber(value: Int($0)) }
         self.screenTrackID = screenTrackID
@@ -46,6 +51,7 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
         self.cameraOverlayPosition = cameraOverlayPosition
         self.cameraOverlaySizeRatio = cameraOverlaySizeRatio
         self.cameraOverlayCenter = cameraOverlayCenter
+        self.cameraBackdrop = cameraBackdrop
         super.init()
     }
 }
@@ -154,7 +160,8 @@ final class AutoZoomCompositor: NSObject, AVVideoCompositing {
                 videoSize: videoSize,
                 position: instruction.cameraOverlayPosition,
                 sizeRatio: instruction.cameraOverlaySizeRatio,
-                normalizedCenter: instruction.cameraOverlayCenter
+                normalizedCenter: instruction.cameraOverlayCenter,
+                backdrop: instruction.cameraBackdrop
             )
             ci = ci.cropped(to: outputRect)
         }
@@ -163,12 +170,32 @@ final class AutoZoomCompositor: NSObject, AVVideoCompositing {
         return outputBuffer
     }
 
+    /// Reused across frames — Vision request allocation is not free.
+    private lazy var segmentationRequest: VNGeneratePersonSegmentationRequest = {
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .balanced
+        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        return request
+    }()
+
+    /// Person-probability mask for a camera frame (white = person), or nil
+    /// when segmentation fails — callers fall back to the real background.
+    private func personMask(for buffer: CVPixelBuffer) -> CIImage? {
+        let handler = VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
+        guard (try? handler.perform([segmentationRequest])) != nil,
+              let mask = segmentationRequest.results?.first?.pixelBuffer else {
+            return nil
+        }
+        return CIImage(cvPixelBuffer: mask)
+    }
+
     private func composeCameraBubble(cameraBuffer: CVPixelBuffer,
                                      onto background: CIImage,
                                      videoSize: CGSize,
                                      position: CameraOverlayPosition,
                                      sizeRatio: CGFloat,
-                                     normalizedCenter: CGPoint?) -> CIImage {
+                                     normalizedCenter: CGPoint?,
+                                     backdrop: BackdropColor?) -> CIImage {
         let diameter = max(96, min(videoSize.width * sizeRatio, videoSize.height * 0.32))
         let margin = max(24, diameter * 0.16)
         let rect: CGRect
@@ -206,6 +233,26 @@ final class AutoZoomCompositor: NSObject, AVVideoCompositing {
         var camera = CIImage(cvPixelBuffer: cameraBuffer)
         let extent = camera.extent
         camera = camera.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+
+        // Replace the real background with a solid backdrop, if requested.
+        // Mask coordinates match the unmirrored buffer, so blend before the
+        // mirror transform below.
+        if let backdrop, let mask = personMask(for: cameraBuffer) {
+            let frameRect = CGRect(origin: .zero, size: extent.size)
+            let scaled = mask.transformed(by: CGAffineTransform(
+                scaleX: extent.width / max(1, mask.extent.width),
+                y: extent.height / max(1, mask.extent.height)
+            ))
+            // A ~1.5 px feather hides the segmentation's stair-step edge.
+            let feathered = scaled
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.5])
+                .cropped(to: frameRect)
+            let solid = CIImage(color: backdrop.ciColor).cropped(to: frameRect)
+            camera = camera.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: solid,
+                kCIInputMaskImageKey: feathered
+            ])
+        }
 
         // Mirror the presenter bubble so it behaves like a front-camera preview.
         camera = camera.transformed(by:

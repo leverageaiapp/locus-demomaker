@@ -22,12 +22,18 @@ final class VideoExporter: ObservableObject {
 
     struct ExportOptions: Sendable {
         var visualMode: ExportVisualMode = .autoZoom
+        /// "#RRGGBB" backdrop painted behind the segmented presenter in the
+        /// camera bubble; empty = keep the real background.
+        var cameraBackdropHex: String = ""
     }
 
     /// `recordingDir` is what `RecordingSession.stopRecording()` returned.
     func export(recordingDir: URL, outputURL: URL,
                 options: ExportOptions = .init(),
                 config: ZoomKeyframeEngine.Config = .init()) async {
+        // The compositor reads this static; clear it on every exit path so a
+        // failed export can't leave a stale renderer for the next run.
+        defer { AutoZoomCompositor.sharedCursorRenderer = nil }
         phase = .loading
         let videoURL = recordingDir.appendingPathComponent("source.mp4")
         let metaURL = recordingDir.appendingPathComponent("metadata.json")
@@ -163,7 +169,8 @@ final class VideoExporter: ObservableObject {
                 frameRate: metadata.frameRate,
                 cameraOverlayPosition: metadata.cameraOverlayPosition ?? .bottomRight,
                 cameraOverlaySizeRatio: metadata.cameraOverlaySizeRatio ?? 0.18,
-                cameraOverlayCenter: nil
+                cameraOverlayCenter: nil,
+                cameraBackdrop: BackdropColor(hex: options.cameraBackdropHex)
             )
             videoComposition.instructions = [instruction]
 
@@ -212,8 +219,6 @@ final class VideoExporter: ObservableObject {
         } catch {
             phase = .failed(error.localizedDescription)
         }
-
-        AutoZoomCompositor.sharedCursorRenderer = nil
     }
 
     private func startProgressPolling(_ exporter: AVAssetExportSession) {

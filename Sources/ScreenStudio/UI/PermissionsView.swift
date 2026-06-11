@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PermissionsView: View {
     @EnvironmentObject var permissions: PermissionsManager
+    @EnvironmentObject var loc: Localization
 
     var body: some View {
         VStack(spacing: 24) {
@@ -14,9 +15,9 @@ struct PermissionsView: View {
                 .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
 
             VStack(spacing: 6) {
-                Text("Welcome to Locus DemoMaker")
+                Text(loc.t("Welcome to Locus DemoMaker"))
                     .font(.title.weight(.semibold))
-                Text("Capture your screen with smooth auto-zoom. We need a couple of macOS permissions first.")
+                Text(loc.t("Capture your screen with smooth auto-zoom. We need a couple of macOS permissions first."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -26,8 +27,8 @@ struct PermissionsView: View {
             VStack(spacing: 10) {
                 permissionCard(
                     icon: "rectangle.inset.filled.and.person.filled",
-                    title: "Screen Recording",
-                    subtitle: "Capture pixels from your display.",
+                    title: loc.t("Screen Recording"),
+                    subtitle: loc.t("Capture pixels from your display."),
                     granted: permissions.screenRecordingGranted,
                     action: {
                         Task {
@@ -41,8 +42,8 @@ struct PermissionsView: View {
                 )
                 permissionCard(
                     icon: "cursorarrow.motionlines",
-                    title: "Accessibility",
-                    subtitle: "Track the cursor anywhere on screen.",
+                    title: loc.t("Accessibility"),
+                    subtitle: loc.t("Track the cursor anywhere on screen."),
                     granted: permissions.accessibilityGranted,
                     action: {
                         permissions.requestAccessibility()
@@ -53,8 +54,8 @@ struct PermissionsView: View {
                 )
                 permissionCard(
                     icon: "mic.fill",
-                    title: "Microphone",
-                    subtitle: "Record narration with the screen.",
+                    title: loc.t("Microphone"),
+                    subtitle: loc.t("Record narration with the screen."),
                     granted: permissions.microphoneGranted,
                     action: {
                         permissions.requestMicrophone()
@@ -62,8 +63,8 @@ struct PermissionsView: View {
                 )
                 permissionCard(
                     icon: "camera.fill",
-                    title: "Camera (Optional)",
-                    subtitle: "Record your presenter bubble when enabled.",
+                    title: loc.t("Camera (Optional)"),
+                    subtitle: loc.t("Record your presenter bubble when enabled."),
                     granted: permissions.cameraGranted,
                     action: {
                         permissions.requestCamera()
@@ -75,7 +76,7 @@ struct PermissionsView: View {
             Button {
                 Task { await permissions.refresh() }
             } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
+                Label(loc.t("Refresh"), systemImage: "arrow.clockwise")
                     .font(.callout)
             }
             .buttonStyle(.borderless)
@@ -111,7 +112,7 @@ struct PermissionsView: View {
                     .foregroundStyle(.green)
                     .transition(.scale.combined(with: .opacity))
             } else {
-                Button("Allow", action: action)
+                Button(loc.t("Allow"), action: action)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }

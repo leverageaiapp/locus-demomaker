@@ -77,8 +77,17 @@ final class CameraRecorder: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         return await withCheckedContinuation { cont in
             writerQueue.async { [weak self] in
+                // finishWriting only invokes its handler from the .writing
+                // state; resuming directly otherwise avoids hanging the
+                // continuation when stop() races a failed or unstarted writer.
+                guard let writer, writer.status == .writing else {
+                    self?.assetWriter = nil
+                    self?.videoInput = nil
+                    cont.resume(returning: nil)
+                    return
+                }
                 input?.markAsFinished()
-                writer?.finishWriting {
+                writer.finishWriting {
                     self?.assetWriter = nil
                     self?.videoInput = nil
                     cont.resume(returning: url)

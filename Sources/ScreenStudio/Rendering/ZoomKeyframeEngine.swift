@@ -13,46 +13,64 @@ struct ZoomKeyframe: Sendable {
 
 /// Converts a stream of mouse + keyboard events into a smooth auto-zoom curve.
 ///
-/// Algorithm:
-///   1. Per-frame **activity signal** that spikes on click / scroll / fast move /
-///      key-press impulses and decays exponentially.
-///   2. Sub-frame **position resampling** with linear interpolation between
-///      adjacent mouse-position events — kills the staircase artefact that
-///      arose when several events arrived inside a single 16.6 ms frame slot.
-///   3. **IIR low-pass** on the resampled position to take the edge off
-///      operating-system mouse jitter before it reaches the spring.
-///   4. **Hysteresis** on the idle decision — focus only re-centers after the
-///      activity has been below threshold for `idleHoldTime` seconds straight,
-///      so a brief dip during slow movement never triggers a "snap to center".
-///   5. **Anticipation** look-ahead so zoom rises before a click, not after.
-///   6. **Critically damped springs** for focus + zoom — no overshoot.
-///   7. Typing is **pinned to the last click position**: keyDown events feed
-///      activity but do *not* update the position target, so when a user is
-///      typing we hold the camera on whatever input field they last clicked.
+/// Two-pass design — because export is offline we can read the whole event
+/// stream before deciding anything, like an editor planning camera moves:
+///
+///   **Pass 1 — plan zoom segments.**
+///   1. Interaction anchors (clicks, drags, scrolls, key presses) are grouped
+///      into *clusters*: events close together in time AND screen space.
+///      Key presses extend a cluster in time but carry no position.
+///   2. Clusters become *segments* — push in just before the first anchor
+///      (anticipation), hold through the last anchor plus `zoomHold`, pull
+///      back to full frame after. Neighboring segments whose focuses are
+///      near each other merge into one continuous zoomed shot (the camera
+///      pans); far-apart jumps instead get a brief pull-back so the viewer
+///      can re-orient.
+///
+///   **Pass 2 — render the curve.**
+///   3. Sub-frame **position resampling** with linear interpolation between
+///      adjacent mouse-position events, then an **IIR low-pass** to take the
+///      edge off OS mouse jitter.
+///   4. **Critically damped springs** for focus + zoom — no overshoot. Zoom
+///      target is binary (full frame or `activeZoom`); the spring turns the
+///      step into a clean push-in/pull-out instead of a continuous "breathing"
+///      tied to instantaneous activity.
+///   5. Typing is **pinned to the last click position**: keyDown events keep
+///      the segment alive but do *not* update the position target, so the
+///      camera holds on whatever input field the user last clicked.
 struct ZoomKeyframeEngine {
     struct Config {
         var idleZoom: Double = 1.0
-        var activeZoom: Double = 1.6
-        var activityHalfLife: Double = 1.2  // seconds
-        var activityFromMovement: Double = 0.0015  // per pixel/sec of mouse speed
-        var clickActivity: Double = 1.0
-        var scrollActivity: Double = 0.6
-        /// Activity contributed by each keyDown — high enough to keep the
-        /// camera latched onto the input field while the user is typing.
-        var keyActivity: Double = 0.55
-        /// Below this activity, the focus is *eligible* to re-center.
-        var idleThreshold: Double = 0.05
-        /// How long activity must stay below threshold before we actually
-        /// snap focus back to screen center. (0.8 s = a comfortable pause.)
-        var idleHoldTime: Double = 0.8
+        var activeZoom: Double = 1.45
+
+        // ── Cluster detection ────────────────────────────────────────────
+        /// Max silence between anchors that still counts as the same cluster.
+        var clusterGapTime: Double = 2.5
+        /// Same-cluster spatial bound, as a fraction of the video diagonal.
+        var clusterRadiusFraction: Double = 0.18
+
+        // ── Segment planning ─────────────────────────────────────────────
+        /// Zoom starts this long before a cluster's first anchor.
+        var anticipation: Double = 0.4
+        /// Zoom is held this long after a cluster's last anchor.
+        var zoomHold: Double = 1.4
+        /// Segments separated by less than this merge into one zoomed shot…
+        var mergeGap: Double = 1.6
+        /// …but only if their focuses are within this fraction of the
+        /// diagonal. Farther jumps pull back to full frame between segments.
+        var panRadiusFraction: Double = 0.40
+
+        // ── Curve rendering ──────────────────────────────────────────────
+        /// Position events farther apart than this are bridged by holding,
+        /// not interpolating — a silent gap means the mouse sat still, and
+        /// lerping across it would leak the next position into the past.
+        var maxInterpolationGap: Double = 0.25
         /// Time-constant of the raw-mouse low-pass filter, in seconds.
         var mouseLowPassTau: Double = 0.030
         /// Spring natural frequency for focus tracking (rad/s). Higher = snappier.
         var focusOmega: Double = 5.5
         /// Spring natural frequency for zoom tracking (rad/s). Lower = smoother zoom.
         var zoomOmega: Double = 3.0
-        /// Time before any event when zoom should start anticipating it.
-        var anticipation: Double = 0.4
     }
 
     let config: Config
@@ -70,74 +88,13 @@ struct ZoomKeyframeEngine {
         let centerY = Double(videoSize.height / 2)
         let sortedEvents = events.sorted { $0.time < $1.time }
 
-        // ── 1. Per-frame activity signal ────────────────────────────────────
-        var activity = [Double](repeating: 0, count: frameCount)
-        let decay = log(2.0) / max(config.activityHalfLife, 0.01)
+        let segments = planSegments(
+            events: sortedEvents,
+            videoSize: videoSize,
+            fallbackFocus: CGPoint(x: centerX, y: centerY)
+        )
 
-        // For movement-speed impulses we need the previous position so we can
-        // measure speed between events. Track it independently from the focus
-        // resampling pass below.
-        var prevMovePos: CGPoint? = nil
-        var prevMoveTime: Double = 0
-
-        var ei = 0
-        for f in 0..<frameCount {
-            let t = Double(f) * dt
-            while ei < sortedEvents.count && sortedEvents[ei].time <= t {
-                let e = sortedEvents[ei]
-                var impulse: Double = 0
-                switch e.kind {
-                case .leftDown, .rightDown:
-                    impulse += config.clickActivity
-                case .scroll:
-                    impulse += config.scrollActivity
-                case .keyDown:
-                    impulse += config.keyActivity
-                case .move, .dragged:
-                    if let p0 = prevMovePos {
-                        let dts = max(0.001, e.time - prevMoveTime)
-                        let dx = e.x - p0.x
-                        let dy = e.y - p0.y
-                        let speed = sqrt(dx * dx + dy * dy) / dts
-                        impulse += min(1.0, speed * config.activityFromMovement)
-                    }
-                    prevMovePos = CGPoint(x: e.x, y: e.y)
-                    prevMoveTime = e.time
-                default:
-                    break
-                }
-                if f < activity.count {
-                    activity[f] += impulse
-                }
-                ei += 1
-            }
-        }
-
-        // Causal exponential smoothing.
-        for f in 1..<frameCount {
-            activity[f] = activity[f] + activity[f - 1] * exp(-decay * dt)
-        }
-        for f in 0..<frameCount {
-            activity[f] = max(0, min(1, activity[f]))
-        }
-
-        // Anticipation — let zoom rise *before* a click.
-        let anticipationFrames = Int(config.anticipation / dt)
-        if anticipationFrames > 0 {
-            var anticipated = activity
-            for f in 0..<frameCount {
-                let end = min(frameCount - 1, f + anticipationFrames)
-                var maxAhead: Double = 0
-                for g in f...end {
-                    let weight = 1.0 - Double(g - f) / Double(anticipationFrames + 1)
-                    maxAhead = max(maxAhead, activity[g] * weight)
-                }
-                anticipated[f] = max(activity[f], maxAhead)
-            }
-            activity = anticipated
-        }
-
-        // ── 2. Sub-frame position resampling ────────────────────────────────
+        // ── Sub-frame position resampling ────────────────────────────────
         // Only events that carry a real cursor position participate. keyDown
         // events are skipped here — that's how typing pins the focus at the
         // last clicked location.
@@ -180,9 +137,15 @@ struct ZoomKeyframeEngine {
                 if pi + 1 < posEvents.count {
                     let p1 = posEvents[pi + 1]
                     let span = max(1e-6, p1.time - p0.time)
-                    let r = min(1, max(0, (t - p0.time) / span))
-                    rawX[f] = p0.x + (p1.x - p0.x) * r
-                    rawY[f] = p0.y + (p1.y - p0.y) * r
+                    if span <= config.maxInterpolationGap {
+                        let r = min(1, max(0, (t - p0.time) / span))
+                        rawX[f] = p0.x + (p1.x - p0.x) * r
+                        rawY[f] = p0.y + (p1.y - p0.y) * r
+                    } else {
+                        // The mouse sat still through this gap — hold.
+                        rawX[f] = p0.x
+                        rawY[f] = p0.y
+                    }
                 } else {
                     rawX[f] = p0.x
                     rawY[f] = p0.y
@@ -190,7 +153,7 @@ struct ZoomKeyframeEngine {
             }
         }
 
-        // ── 3. IIR low-pass on the raw position ─────────────────────────────
+        // ── IIR low-pass on the raw position ─────────────────────────────
         let alpha = dt / (config.mouseLowPassTau + dt)
         var fx = rawX[0]
         var fy = rawY[0]
@@ -201,10 +164,7 @@ struct ZoomKeyframeEngine {
             rawY[f] = fy
         }
 
-        // ── 4. Spring-driven keyframes with hysteresis idle detection ───────
-        let idleFramesNeeded = max(1, Int(config.idleHoldTime / dt))
-        var idleStreak = 0
-
+        // ── Spring-driven keyframes against the segment plan ─────────────
         var camX: Double = centerX
         var camY: Double = centerY
         var camVX: Double = 0
@@ -215,24 +175,15 @@ struct ZoomKeyframeEngine {
         var keyframes = [ZoomKeyframe]()
         keyframes.reserveCapacity(frameCount)
 
+        var si = 0
         for f in 0..<frameCount {
             let t = Double(f) * dt
-            let a = activity[f]
+            while si < segments.count && segments[si].end < t { si += 1 }
+            let inSegment = si < segments.count && t >= segments[si].start
 
-            if a < config.idleThreshold {
-                idleStreak += 1
-            } else {
-                idleStreak = 0
-            }
-            let isIdle = idleStreak >= idleFramesNeeded
-
-            // Zoom fades out naturally with activity — no hard switch.
-            let targetZoom = config.idleZoom
-                + (config.activeZoom - config.idleZoom) * a
-            // Focus only snaps back to center after a confirmed long pause;
-            // brief activity dips during a single mouse stroke do not.
-            let targetX: Double = isIdle ? centerX : rawX[f]
-            let targetY: Double = isIdle ? centerY : rawY[f]
+            let targetZoom = inSegment ? config.activeZoom : config.idleZoom
+            let targetX: Double = inSegment ? rawX[f] : centerX
+            let targetY: Double = inSegment ? rawY[f] : centerY
 
             (camX, camVX) = criticallyDampedStep(
                 value: camX, velocity: camVX, target: targetX,
@@ -253,6 +204,96 @@ struct ZoomKeyframeEngine {
         }
 
         return keyframes
+    }
+
+    // MARK: - Pass 1: segment planning
+
+    private struct Cluster {
+        var start: Double
+        var end: Double
+        var cx: Double
+        var cy: Double
+        var weight: Double
+    }
+
+    private struct Segment {
+        var start: Double
+        var end: Double
+        var cx: Double
+        var cy: Double
+    }
+
+    private func planSegments(events: [MouseEvent], videoSize: CGSize,
+                              fallbackFocus: CGPoint) -> [Segment] {
+        let diagonal = Double(hypot(videoSize.width, videoSize.height))
+        let clusterRadius = diagonal * config.clusterRadiusFraction
+        let panRadius = diagonal * config.panRadiusFraction
+
+        // ── Group anchors into clusters ──────────────────────────────────
+        var clusters = [Cluster]()
+        var lastCursor = fallbackFocus
+
+        for e in events {
+            // Track the latest known cursor position so a typing-only burst
+            // (keyboard shortcut, no preceding click) anchors where the
+            // cursor is actually resting.
+            if e.kind != .keyDown {
+                lastCursor = CGPoint(x: e.x, y: e.y)
+            }
+
+            let anchorPos: CGPoint?
+            switch e.kind {
+            case .leftDown, .leftUp, .rightDown, .rightUp, .dragged, .scroll:
+                anchorPos = CGPoint(x: e.x, y: e.y)
+            case .keyDown:
+                anchorPos = nil // extends a cluster in time, not in space
+            case .move:
+                continue // plain movement never starts or extends a zoom
+            }
+
+            if var c = clusters.last,
+               e.time - c.end <= config.clusterGapTime,
+               anchorPos.map({ hypot($0.x - c.cx, $0.y - c.cy) <= clusterRadius }) ?? true {
+                c.end = e.time
+                if let p = anchorPos {
+                    c.cx = (c.cx * c.weight + p.x) / (c.weight + 1)
+                    c.cy = (c.cy * c.weight + p.y) / (c.weight + 1)
+                    c.weight += 1
+                }
+                clusters[clusters.count - 1] = c
+            } else {
+                let p = anchorPos ?? lastCursor
+                clusters.append(Cluster(start: e.time, end: e.time,
+                                        cx: p.x, cy: p.y, weight: 1))
+            }
+        }
+
+        // ── Merge clusters into segments ─────────────────────────────────
+        var segments = [Segment]()
+        for c in clusters {
+            let start = max(0, c.start - config.anticipation)
+            let end = c.end + config.zoomHold
+            if var last = segments.last,
+               start - last.end <= config.mergeGap,
+               hypot(c.cx - last.cx, c.cy - last.cy) <= panRadius {
+                // Near in time and space — stay zoomed and pan across.
+                last.end = max(last.end, end)
+                last.cx = c.cx
+                last.cy = c.cy
+                segments[segments.count - 1] = last
+            } else {
+                // A far jump that overlaps the previous segment's hold tail:
+                // trim the tail so the zoom dips toward full frame between
+                // the two locations and the viewer can re-orient.
+                if var last = segments.last, last.end > start {
+                    last.end = start
+                    segments[segments.count - 1] = last
+                }
+                segments.append(Segment(start: start, end: end, cx: c.cx, cy: c.cy))
+            }
+        }
+
+        return segments
     }
 
     /// Closed-form critically damped spring step (no overshoot).

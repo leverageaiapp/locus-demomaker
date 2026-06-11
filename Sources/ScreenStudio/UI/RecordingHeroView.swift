@@ -1,17 +1,21 @@
 import SwiftUI
 import AVFoundation
 import ScreenCaptureKit
+import CoreImage
+import Vision
 
 /// The hero "press to record" panel at the top of the window.
 /// Big circular button, refined typography, soft frosted card.
 struct RecordingHeroView: View {
     @EnvironmentObject var session: RecordingSession
     @EnvironmentObject var library: RecordingsLibrary
+    @EnvironmentObject var loc: Localization
 
     @State private var elapsed: TimeInterval = 0
     @State private var timer: Timer?
     @State private var hideCameraPreviewWhileStarting = false
     @AppStorage("exportVisualMode") private var exportVisualModeRaw = ExportVisualMode.autoZoom.rawValue
+    @AppStorage("cameraBackdropHex") private var cameraBackdropHex = ""
     /// Suppresses the auto-open behavior on the very first appearance, when the
     /// captureMode is just being restored from UserDefaults.
     @State private var didApplyInitialMode = false
@@ -34,11 +38,19 @@ struct RecordingHeroView: View {
                 .fill(.regularMaterial)
                 .overlay {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.35),
+                                         Color.primary.opacity(0.05)],
+                                startPoint: .top, endPoint: .bottom
+                            ),
+                            lineWidth: 0.75
+                        )
                 }
-                .shadow(color: .black.opacity(0.04), radius: 12, y: 4)
+                .shadow(color: .black.opacity(0.07), radius: 16, y: 6)
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.78), value: session.isRecording)
+        .onDisappear { stopTimer() }
         .onChange(of: session.captureMode) { _, newMode in
             // Skip the change SwiftUI emits when the @Published var first attaches.
             guard didApplyInitialMode else {
@@ -62,6 +74,23 @@ struct RecordingHeroView: View {
     private var recordButton: some View {
         Button(action: toggle) {
             ZStack {
+                // soft ambient glow — breathes while recording
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.red.opacity(session.isRecording ? 0.38 : 0.18),
+                                     Color.red.opacity(0)],
+                            center: .center, startRadius: 4, endRadius: 64
+                        )
+                    )
+                    .frame(width: 128, height: 128)
+                    .scaleEffect(session.isRecording ? 1.12 : 1.0)
+                    .animation(
+                        session.isRecording
+                            ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true)
+                            : .easeOut(duration: 0.3),
+                        value: session.isRecording
+                    )
                 // outer halo
                 Circle()
                     .fill(Color.red.opacity(session.isRecording ? 0.22 : 0.14))
@@ -106,15 +135,15 @@ struct RecordingHeroView: View {
                 Text(formatElapsed(elapsed))
                     .font(.system(size: 30, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                Text("Click the button to stop")
+                Text(loc.t("Click the button to stop"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         } else {
             VStack(spacing: 10) {
-                Text("Start Recording")
+                Text(loc.t("Start Recording"))
                     .font(.title2.weight(.semibold))
-                Text(processingCaption)
+                Text(loc.t(processingCaption))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -125,6 +154,9 @@ struct RecordingHeroView: View {
                 HStack(spacing: 14) {
                     cameraToggle
                     qualityPicker
+                }
+                if session.includeCamera {
+                    CameraBackdropPicker()
                 }
                 if session.includeCamera && !hideCameraPreviewWhileStarting {
                     cameraPositioner
@@ -147,7 +179,7 @@ struct RecordingHeroView: View {
     private var modeSegmented: some View {
         Picker("", selection: $session.captureMode) {
             ForEach(CaptureMode.allCases) { mode in
-                Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+                Label(loc.t(mode.displayName), systemImage: mode.systemImage).tag(mode)
             }
         }
         .pickerStyle(.segmented)
@@ -156,12 +188,12 @@ struct RecordingHeroView: View {
     }
 
     private var processingSegmented: some View {
-        Picker("Processing", selection: Binding(
+        Picker(loc.t("Processing"), selection: Binding(
             get: { exportVisualMode },
             set: { exportVisualMode = $0 }
         )) {
             ForEach(ExportVisualMode.allCases) { mode in
-                Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+                Label(loc.t(mode.displayName), systemImage: mode.systemImage).tag(mode)
             }
         }
         .pickerStyle(.segmented)
@@ -183,7 +215,7 @@ struct RecordingHeroView: View {
         case .fullDisplay:
             HStack(spacing: 6) {
                 Image(systemName: "display").font(.caption)
-                Text(session.selectedDisplay?.localizedName ?? "Display")
+                Text(session.selectedDisplay?.localizedName ?? loc.t("Display"))
             }
             .font(.callout).foregroundStyle(.secondary)
 
@@ -196,7 +228,7 @@ struct RecordingHeroView: View {
                 Button {
                     session.presentRegionPicker()
                 } label: {
-                    Label("Adjust", systemImage: "scope")
+                    Label(loc.t("Adjust"), systemImage: "scope")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -220,20 +252,20 @@ struct RecordingHeroView: View {
                 Button {
                     session.presentWindowPicker()
                 } label: {
-                    Label("Change", systemImage: "scope")
+                    Label(loc.t("Change"), systemImage: "scope")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
         } else {
             HStack(spacing: 8) {
-                Label("No window picked", systemImage: "macwindow.badge.plus")
+                Label(loc.t("No window picked"), systemImage: "macwindow.badge.plus")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Button {
                     session.presentWindowPicker()
                 } label: {
-                    Label("Pick a window", systemImage: "scope")
+                    Label(loc.t("Pick a window"), systemImage: "scope")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -247,12 +279,12 @@ struct RecordingHeroView: View {
         if !app.isEmpty && !title.isEmpty { return "\(app) — \(title)" }
         if !app.isEmpty { return app }
         if !title.isEmpty { return title }
-        return "Window"
+        return loc.t("Window")
     }
 
     private var cameraToggle: some View {
         Toggle(isOn: $session.includeCamera) {
-            Label("Face Camera", systemImage: "camera.fill")
+            Label(loc.t("Face Camera"), systemImage: "camera.fill")
         }
         .toggleStyle(.switch)
         .controlSize(.small)
@@ -262,9 +294,9 @@ struct RecordingHeroView: View {
     }
 
     private var qualityPicker: some View {
-        Picker("Quality", selection: $session.recordingQuality) {
+        Picker(loc.t("Quality"), selection: $session.recordingQuality) {
             ForEach(RecordingQuality.allCases) { quality in
-                Text(quality.displayName).tag(quality)
+                Text(loc.t(quality.displayName)).tag(quality)
             }
         }
         .pickerStyle(.menu)
@@ -290,7 +322,7 @@ struct RecordingHeroView: View {
                             .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
                     }
 
-                CameraPreview()
+                CameraPreview(backdropHex: cameraBackdropHex)
                     .frame(width: bubbleSize, height: bubbleSize)
                     .clipShape(Circle())
                     .overlay {
@@ -406,13 +438,17 @@ private struct RecordButtonStyle: ButtonStyle {
 }
 
 private struct CameraPreview: NSViewRepresentable {
+    let backdropHex: String
+
     func makeNSView(context: Context) -> CameraPreviewView {
         let view = CameraPreviewView()
+        view.backdrop = BackdropColor(hex: backdropHex)
         view.start()
         return view
     }
 
     func updateNSView(_ nsView: CameraPreviewView, context: Context) {
+        nsView.backdrop = BackdropColor(hex: backdropHex)
         nsView.start()
     }
 
@@ -421,16 +457,40 @@ private struct CameraPreview: NSViewRepresentable {
     }
 }
 
-private final class CameraPreviewView: NSView {
+/// Live camera preview that applies the same person-segmentation backdrop the
+/// exporter uses, so the picked color is visible in real time. Frames flow
+/// through AVCaptureVideoDataOutput → Vision (.fast) → CIBlendWithMask →
+/// layer.contents, instead of an AVCaptureVideoPreviewLayer.
+private final class CameraPreviewView: NSView, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.screenstudio.camera.preview", qos: .userInitiated)
-    private var previewLayer: AVCaptureVideoPreviewLayer?
     private var configured = false
+    private let ciContext = CIContext()
 
-    override func layout() {
-        super.layout()
-        previewLayer?.frame = bounds
+    private let backdropLock = NSLock()
+    private var _backdrop: BackdropColor?
+    /// Read on the capture queue, written from the main thread.
+    var backdrop: BackdropColor? {
+        get { backdropLock.lock(); defer { backdropLock.unlock() }; return _backdrop }
+        set { backdropLock.lock(); _backdrop = newValue; backdropLock.unlock() }
     }
+
+    /// `.fast` keeps segmentation comfortably real-time; export uses `.balanced`.
+    private lazy var segmentationRequest: VNGeneratePersonSegmentationRequest = {
+        let request = VNGeneratePersonSegmentationRequest()
+        request.qualityLevel = .fast
+        request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        return request
+    }()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.contentsGravity = .resizeAspectFill
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func start() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -479,13 +539,50 @@ private final class CameraPreviewView: NSView {
             session.addInput(input)
         }
 
-        session.commitConfiguration()
+        let output = AVCaptureVideoDataOutput()
+        output.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
+        output.alwaysDiscardsLateVideoFrames = true
+        output.setSampleBufferDelegate(self, queue: queue)
+        if session.canAddOutput(output) {
+            session.addOutput(output)
+        }
 
-        let layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resizeAspectFill
-        layer.frame = bounds
-        wantsLayer = true
-        self.layer?.addSublayer(layer)
-        previewLayer = layer
+        session.commitConfiguration()
+    }
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        var image = CIImage(cvPixelBuffer: buffer)
+        let rect = image.extent
+
+        if let backdrop,
+           (try? VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
+               .perform([segmentationRequest])) != nil,
+           let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
+            let mask = CIImage(cvPixelBuffer: maskBuffer)
+            let scaledMask = mask.transformed(by: CGAffineTransform(
+                scaleX: rect.width / max(1, mask.extent.width),
+                y: rect.height / max(1, mask.extent.height)
+            ))
+            let solid = CIImage(color: backdrop.ciColor).cropped(to: rect)
+            image = image.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: solid,
+                kCIInputMaskImageKey: scaledMask
+            ])
+        }
+
+        // Mirror like a selfie preview (matches the exported bubble).
+        image = image.transformed(by:
+            CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -rect.width, y: 0)
+        )
+
+        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.layer?.contents = cgImage
+        }
     }
 }

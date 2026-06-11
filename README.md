@@ -49,11 +49,17 @@ On first launch you'll be prompted for these system permissions:
   remembered across launches.
 
 ### Auto-zoom that knows when you're typing
-Records a 60 fps source video plus every mouse + key event. At export time, an
-activity signal (clicks, scrolls, fast moves, key presses) drives a critically
-damped spring that pans + zooms to the cursor. **Key presses contribute activity
-but don't move the focus** — so when you start typing in an input field, the
-camera holds on that field instead of drifting back to screen center.
+Records a 60 fps source video plus every mouse + key event. At export time,
+clicks, drags, scrolls and key presses are grouped into **interaction
+clusters** — events close together in time and screen space — and each cluster
+becomes a planned zoom segment: push in just before the first click
+(anticipation), hold while you work, pull back to full frame when you move on.
+Nearby segments merge into one continuous shot that pans with the cursor;
+far jumps pull back first so the viewer can re-orient. Critically damped
+springs drive both pan and zoom, so nothing ever overshoots. **Key presses
+keep a segment alive but don't move the focus** — so when you start typing in
+an input field, the camera holds on that field instead of drifting back to
+screen center.
 
 ### Optional presenter bubble
 Toggle on the camera and a circular sidecar webcam recording is composited

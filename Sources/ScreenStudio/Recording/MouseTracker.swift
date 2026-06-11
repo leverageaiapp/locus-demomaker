@@ -65,12 +65,14 @@ final class MouseTracker {
         return true
     }
 
+    @discardableResult
     func stop() -> [MouseEvent] {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
             if let src = runLoopSource {
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
             }
+            CFMachPortInvalidate(tap)
         }
         eventTap = nil
         runLoopSource = nil

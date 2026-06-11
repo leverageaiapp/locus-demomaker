@@ -5,12 +5,14 @@ import UniformTypeIdentifiers
 struct RecordingsListView: View {
     @EnvironmentObject var library: RecordingsLibrary
     @EnvironmentObject var exporter: VideoExporter
+    @EnvironmentObject var loc: Localization
 
     @State private var showAll = false
     @State private var exportingItemID: UUID?
     @State private var pendingDelete: RecordingItem?
     @State private var showDeleteAlert = false
     @AppStorage("exportVisualMode") private var exportVisualModeRaw = ExportVisualMode.autoZoom.rawValue
+    @AppStorage("cameraBackdropHex") private var cameraBackdropHex = ""
 
     private let defaultLimit = 5
     private var exportVisualMode: ExportVisualMode {
@@ -48,14 +50,15 @@ struct RecordingsListView: View {
                 .animation(.snappy, value: showAll)
             }
         }
-        .alert("Delete this recording?", isPresented: $showDeleteAlert, presenting: pendingDelete) { item in
-            Button("Move to Trash", role: .destructive) {
+        .alert(loc.t("Delete this recording?"), isPresented: $showDeleteAlert, presenting: pendingDelete) { item in
+            Button(loc.t("Move to Trash"), role: .destructive) {
                 library.delete(item)
                 pendingDelete = nil
             }
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button(loc.t("Cancel"), role: .cancel) { pendingDelete = nil }
         } message: { item in
-            Text("\(item.directory.lastPathComponent) and its source video will be moved to the Trash.")
+            Text(String(format: loc.t("%@ and its source video will be moved to the Trash."),
+                        item.directory.lastPathComponent))
         }
     }
 
@@ -67,10 +70,10 @@ struct RecordingsListView: View {
                 .font(.system(size: 36, weight: .light))
                 .foregroundStyle(.tertiary)
                 .symbolRenderingMode(.hierarchical)
-            Text("No recordings yet")
+            Text(loc.t("No recordings yet"))
                 .font(.headline.weight(.medium))
                 .foregroundStyle(.secondary)
-            Text("Press the record button above to capture your first one.")
+            Text(loc.t("Press the record button above to capture your first one."))
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         }
@@ -91,7 +94,7 @@ struct RecordingsListView: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(showAll ? "Show fewer" : "Show all (\(library.items.count))")
+                Text(showAll ? loc.t("Show fewer") : "\(loc.t("Show all")) (\(library.items.count))")
                 Image(systemName: showAll ? "chevron.up" : "chevron.down")
                     .font(.caption.weight(.semibold))
             }
@@ -112,8 +115,12 @@ struct RecordingsListView: View {
     private func runExport(_ item: RecordingItem, visualMode: ExportVisualMode) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = "Locus-DemoMaker-\(Int(Date().timeIntervalSince1970)).mp4"
-        panel.title = "Export final video"
+        let stamp = Date().formatted(.dateTime.year().month(.twoDigits).day()
+            .hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: ".")
+        panel.nameFieldStringValue = "Locus Demo \(stamp).mp4"
+        panel.title = loc.t("Export final video")
         panel.canCreateDirectories = true
         panel.begin { response in
             guard response == .OK, let outURL = panel.url else { return }
@@ -122,7 +129,8 @@ struct RecordingsListView: View {
                 await exporter.export(
                     recordingDir: item.directory,
                     outputURL: outURL,
-                    options: .init(visualMode: visualMode)
+                    options: .init(visualMode: visualMode,
+                                   cameraBackdropHex: cameraBackdropHex)
                 )
                 // Refresh so the row picks up the new export.json marker and
                 // can flip to the post-export action set.
@@ -143,6 +151,7 @@ private struct RecordingRow: View {
     let onExport: () -> Void
     let onDelete: () -> Void
     @EnvironmentObject var exporter: VideoExporter
+    @EnvironmentObject var loc: Localization
     @State private var hovering = false
 
     var body: some View {
@@ -182,24 +191,25 @@ private struct RecordingRow: View {
     }
 
     private var thumbnail: some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [Color.indigo.opacity(0.85), Color.purple.opacity(0.85)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-            )
-            .frame(width: 56, height: 36)
+        VideoThumbnail(url: item.sourceVideoURL)
+            .frame(width: 64, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 Image(systemName: "play.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.15), radius: 1)
+                    .shadow(color: .black.opacity(0.45), radius: 2)
+                    .opacity(hovering ? 1 : 0)
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
             }
+            .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+            .onTapGesture {
+                NSWorkspace.shared.open(item.sourceVideoURL)
+            }
+            .help(loc.t("Play original recording"))
     }
 
     private var metadataLine: some View {
@@ -238,10 +248,10 @@ private struct RecordingRow: View {
         case .loading:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                Text(loc.t("Loading…")).font(.caption).foregroundStyle(.secondary)
             }
         case .finished:
-            Label("Exported", systemImage: "checkmark.circle.fill")
+            Label(loc.t("Exported"), systemImage: "checkmark.circle.fill")
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.green)
                 .font(.caption.weight(.medium))
@@ -273,31 +283,31 @@ private struct RecordingRow: View {
             modePill
 
             Button(action: onExport) {
-                Label("Export", systemImage: "square.and.arrow.up")
+                Label(loc.t("Export"), systemImage: "square.and.arrow.up")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
 
             secondaryMenu {
-                Picker("Video Mode", selection: $exportVisualMode) {
+                Picker(loc.t("Video Mode"), selection: $exportVisualMode) {
                     ForEach(ExportVisualMode.allCases) { mode in
-                        Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+                        Label(loc.t(mode.displayName), systemImage: mode.systemImage).tag(mode)
                     }
                 }
                 Divider()
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([item.sourceVideoURL])
                 } label: {
-                    Label("Show original recording in Finder", systemImage: "folder")
+                    Label(loc.t("Show original recording in Finder"), systemImage: "folder")
                 }
                 Button {
                     NSWorkspace.shared.open(item.sourceVideoURL)
                 } label: {
-                    Label("Open original source.mp4", systemImage: "play.rectangle")
+                    Label(loc.t("Open original source.mp4"), systemImage: "play.rectangle")
                 }
                 Divider()
                 Button(role: .destructive, action: onDelete) {
-                    Label("Move recording to Trash", systemImage: "trash")
+                    Label(loc.t("Move recording to Trash"), systemImage: "trash")
                 }
             }
         }
@@ -310,7 +320,7 @@ private struct RecordingRow: View {
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([exported])
             } label: {
-                Label("Show in Finder", systemImage: "folder")
+                Label(loc.t("Show in Finder"), systemImage: "folder")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
@@ -322,37 +332,37 @@ private struct RecordingRow: View {
                     Button {
                         NSWorkspace.shared.activateFileViewerSelecting([exported])
                     } label: {
-                        Label("Show exported file in Finder", systemImage: "folder")
+                        Label(loc.t("Show exported file in Finder"), systemImage: "folder")
                     }
                     Button {
                         NSWorkspace.shared.activateFileViewerSelecting([item.sourceVideoURL])
                     } label: {
-                        Label("Show original recording in Finder", systemImage: "folder.badge.gearshape")
+                        Label(loc.t("Show original recording in Finder"), systemImage: "folder.badge.gearshape")
                     }
                 }
                 Section {
                     Button {
                         NSWorkspace.shared.open(exported)
                     } label: {
-                        Label("Open exported file", systemImage: "play.rectangle.on.rectangle")
+                        Label(loc.t("Open exported file"), systemImage: "play.rectangle.on.rectangle")
                     }
                     Button {
                         NSWorkspace.shared.open(item.sourceVideoURL)
                     } label: {
-                        Label("Open original source.mp4", systemImage: "play.rectangle")
+                        Label(loc.t("Open original source.mp4"), systemImage: "play.rectangle")
                     }
                 }
                 Section {
-                    Picker("Video Mode", selection: $exportVisualMode) {
+                    Picker(loc.t("Video Mode"), selection: $exportVisualMode) {
                         ForEach(ExportVisualMode.allCases) { mode in
-                            Label(mode.displayName, systemImage: mode.systemImage).tag(mode)
+                            Label(loc.t(mode.displayName), systemImage: mode.systemImage).tag(mode)
                         }
                     }
                     Button(action: onExport) {
-                        Label("Re-export…", systemImage: "square.and.arrow.up.on.square")
+                        Label(loc.t("Re-export…"), systemImage: "square.and.arrow.up.on.square")
                     }
                     Button(role: .destructive, action: onDelete) {
-                        Label("Move recording to Trash", systemImage: "trash")
+                        Label(loc.t("Move recording to Trash"), systemImage: "trash")
                     }
                 }
             }
@@ -373,7 +383,7 @@ private struct RecordingRow: View {
     }
 
     private var modePill: some View {
-        Label(exportVisualMode.displayName, systemImage: exportVisualMode.systemImage)
+        Label(loc.t(exportVisualMode.displayName), systemImage: exportVisualMode.systemImage)
             .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
             .lineLimit(1)
