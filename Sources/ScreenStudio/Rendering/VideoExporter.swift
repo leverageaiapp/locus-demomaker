@@ -17,8 +17,18 @@ final class VideoExporter: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var phase: Phase = .idle
-    private var progressTimer: Timer?
+    /// One phase per recording directory — exports of different recordings
+    /// run concurrently, each with its own progress.
+    @Published private(set) var phases: [URL: Phase] = [:]
+
+    func phase(for recordingDir: URL) -> Phase {
+        phases[recordingDir] ?? .idle
+    }
+
+    /// Forget a finished/failed phase so the row returns to its action set.
+    func clearPhase(for recordingDir: URL) {
+        phases[recordingDir] = nil
+    }
 
     struct ExportOptions: Sendable {
         var visualMode: ExportVisualMode = .autoZoom
@@ -31,9 +41,16 @@ final class VideoExporter: ObservableObject {
     func export(recordingDir: URL, outputURL: URL,
                 options: ExportOptions = .init(),
                 config: ZoomKeyframeEngine.Config = .init()) async {
-        // The compositor reads this static; clear it on every exit path so a
-        // failed export can't leave a stale renderer for the next run.
-        defer { AutoZoomCompositor.sharedCursorRenderer = nil }
+        // One export per recording at a time; different recordings in parallel.
+        switch phase(for: recordingDir) {
+        case .loading, .exporting:
+            return
+        default:
+            break
+        }
+        var phase: Phase = .loading {
+            didSet { phases[recordingDir] = phase }
+        }
         phase = .loading
         let videoURL = recordingDir.appendingPathComponent("source.mp4")
         let metaURL = recordingDir.appendingPathComponent("metadata.json")
@@ -103,7 +120,6 @@ final class VideoExporter: ObservableObject {
                 duration: durationSeconds,
                 pointScale: max(1, metadata.displayScale)
             )
-            AutoZoomCompositor.sharedCursorRenderer = cursor
 
             // Build composition.
             let composition = AVMutableComposition()
@@ -171,7 +187,8 @@ final class VideoExporter: ObservableObject {
                 cameraOverlayPosition: metadata.cameraOverlayPosition ?? .bottomRight,
                 cameraOverlaySizeRatio: metadata.cameraOverlaySizeRatio ?? 0.18,
                 cameraOverlayCenter: nil,
-                cameraBackdrop: BackdropColor(hex: options.cameraBackdropHex)
+                cameraBackdrop: BackdropColor(hex: options.cameraBackdropHex),
+                cursorRenderer: cursor
             )
             videoComposition.instructions = [instruction]
 
@@ -191,10 +208,18 @@ final class VideoExporter: ObservableObject {
             exporter.shouldOptimizeForNetworkUse = true
 
             phase = .exporting(progress: 0)
-            startProgressPolling(exporter)
+            let pollTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    guard let self else { return }
+                    if case .exporting = self.phases[recordingDir] ?? .idle {
+                        self.phases[recordingDir] = .exporting(progress: Double(exporter.progress))
+                    }
+                }
+            }
 
             await exporter.export()
-            stopProgressPolling()
+            pollTask.cancel()
 
             switch exporter.status {
             case .completed:
@@ -220,23 +245,6 @@ final class VideoExporter: ObservableObject {
         } catch {
             phase = .failed(error.localizedDescription)
         }
-    }
-
-    private func startProgressPolling(_ exporter: AVAssetExportSession) {
-        progressTimer?.invalidate()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self = self else { return }
-                if case .exporting = self.phase {
-                    self.phase = .exporting(progress: Double(exporter.progress))
-                }
-            }
-        }
-    }
-
-    private func stopProgressPolling() {
-        progressTimer?.invalidate()
-        progressTimer = nil
     }
 
     private static func fullFrameKeyframes(duration: Double, frameRate: Int,

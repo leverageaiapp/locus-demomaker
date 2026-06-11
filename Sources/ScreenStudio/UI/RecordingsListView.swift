@@ -8,7 +8,6 @@ struct RecordingsListView: View {
     @EnvironmentObject var loc: Localization
 
     @State private var showAll = false
-    @State private var exportingItemID: UUID?
     @State private var pendingDelete: RecordingItem?
     @State private var showDeleteAlert = false
     @AppStorage("exportVisualMode") private var exportVisualModeRaw = ExportVisualMode.autoZoom.rawValue
@@ -29,7 +28,6 @@ struct RecordingsListView: View {
                     ForEach(visibleItems) { item in
                         RecordingRow(
                             item: item,
-                            isExporting: exportingItemID == item.id,
                             exportVisualMode: Binding(
                                 get: { exportVisualMode },
                                 set: { exportVisualMode = $0 }
@@ -125,7 +123,6 @@ struct RecordingsListView: View {
         panel.begin { response in
             guard response == .OK, let outURL = panel.url else { return }
             Task {
-                exportingItemID = item.id
                 await exporter.export(
                     recordingDir: item.directory,
                     outputURL: outURL,
@@ -134,14 +131,14 @@ struct RecordingsListView: View {
                 )
                 // Show the finished video right away — exporting is the whole
                 // point; nobody wants to go digging for the file afterwards.
-                if case .finished(let exportedURL) = exporter.phase {
+                if case .finished(let exportedURL) = exporter.phase(for: item.directory) {
                     NSWorkspace.shared.open(exportedURL)
                 }
                 // Refresh so the row picks up the new export.json marker and
                 // can flip to the post-export action set.
                 await library.refresh()
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
-                exportingItemID = nil
+                exporter.clearPhase(for: item.directory)
             }
         }
     }
@@ -151,13 +148,20 @@ struct RecordingsListView: View {
 
 private struct RecordingRow: View {
     let item: RecordingItem
-    let isExporting: Bool
     @Binding var exportVisualMode: ExportVisualMode
     let onExport: () -> Void
     let onDelete: () -> Void
     @EnvironmentObject var exporter: VideoExporter
     @EnvironmentObject var loc: Localization
     @State private var hovering = false
+
+    private var phase: VideoExporter.Phase { exporter.phase(for: item.directory) }
+    private var isExporting: Bool {
+        switch phase {
+        case .idle: return false
+        default: return true
+        }
+    }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -240,7 +244,7 @@ private struct RecordingRow: View {
 
     @ViewBuilder
     private var exportStatus: some View {
-        switch exporter.phase {
+        switch phase {
         case .exporting(let p):
             HStack(spacing: 8) {
                 ProgressView(value: p)

@@ -32,6 +32,10 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
     /// When set, the presenter is segmented out of the camera frame and this
     /// solid color is painted behind them.
     let cameraBackdrop: BackdropColor?
+    /// Cursor + click-ripple renderer for this export. Carried on the
+    /// instruction (not compositor-global state) so several exports can run
+    /// concurrently without clobbering each other.
+    let cursorRenderer: CursorRenderer?
 
     init(timeRange: CMTimeRange, sourceTrackIDs: [CMPersistentTrackID],
          screenTrackID: CMPersistentTrackID,
@@ -40,7 +44,8 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
          cameraOverlayPosition: CameraOverlayPosition = .bottomRight,
          cameraOverlaySizeRatio: CGFloat = 0.18,
          cameraOverlayCenter: CGPoint? = nil,
-         cameraBackdrop: BackdropColor? = nil) {
+         cameraBackdrop: BackdropColor? = nil,
+         cursorRenderer: CursorRenderer? = nil) {
         self.timeRange = timeRange
         self.requiredSourceTrackIDs = sourceTrackIDs.map { NSNumber(value: Int($0)) }
         self.screenTrackID = screenTrackID
@@ -52,6 +57,7 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
         self.cameraOverlaySizeRatio = cameraOverlaySizeRatio
         self.cameraOverlayCenter = cameraOverlayCenter
         self.cameraBackdrop = cameraBackdrop
+        self.cursorRenderer = cursorRenderer
         super.init()
     }
 }
@@ -59,9 +65,6 @@ final class AutoZoomCompositionInstruction: NSObject, AVVideoCompositionInstruct
 /// Custom AVVideoCompositing that reads each source frame, applies the zoom transform
 /// from the keyframe table, and overlays the cursor + click ripples.
 final class AutoZoomCompositor: NSObject, AVVideoCompositing {
-    /// Set externally before passing this compositor to AVAssetExportSession.
-    static var sharedCursorRenderer: CursorRenderer?
-
     private let renderQueue = DispatchQueue(label: "com.screenstudio.compositor.render", qos: .userInitiated)
     private let ciContext: CIContext = {
         // GPU when available.
@@ -146,7 +149,7 @@ final class AutoZoomCompositor: NSObject, AVVideoCompositing {
         ci = ci.cropped(to: outputRect).composited(over: background)
 
         // Overlay cursor + click ripples.
-        if let cursor = AutoZoomCompositor.sharedCursorRenderer {
+        if let cursor = instruction.cursorRenderer {
             ci = cursor.compose(onto: ci, time: timeSeconds,
                                 focus: CGPoint(x: focusX, y: focusYFromTop), zoom: zoom)
             ci = ci.cropped(to: outputRect)
