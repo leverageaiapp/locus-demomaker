@@ -100,7 +100,8 @@ final class VideoExporter: ObservableObject {
                 events: metadata.mouseEvents,
                 frameRate: metadata.frameRate,
                 videoSize: videoSize,
-                duration: durationSeconds
+                duration: durationSeconds,
+                pointScale: max(1, metadata.displayScale)
             )
             AutoZoomCompositor.sharedCursorRenderer = cursor
 

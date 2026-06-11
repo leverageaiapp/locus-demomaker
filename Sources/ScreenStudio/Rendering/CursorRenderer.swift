@@ -20,23 +20,30 @@ final class CursorRenderer {
     let mousePositions: [CGPoint]
     let frameRate: Int
     let videoSize: CGSize
+    /// Point→pixel scale of the captured surface (Retina = 2). The cursor is
+    /// drawn in *pixel* space — without this it renders at half size on
+    /// Retina captures and is barely visible.
+    let pointScale: CGFloat
 
     /// Cached cursor rendered at scale=1.0; we transform per-frame.
     private let cursorBaseImage: CIImage?
     /// Cached ripple — single white circle, scaled per-frame.
     private let rippleBaseImage: CIImage?
 
-    init(clicks: [Click], mousePositions: [CGPoint], frameRate: Int, videoSize: CGSize) {
+    init(clicks: [Click], mousePositions: [CGPoint], frameRate: Int, videoSize: CGSize,
+         pointScale: CGFloat = 2) {
         self.clicks = clicks
         self.mousePositions = mousePositions
         self.frameRate = frameRate
         self.videoSize = videoSize
+        self.pointScale = max(1, pointScale)
         self.cursorBaseImage = Self.renderCursorImage()
         self.rippleBaseImage = Self.renderRippleImage()
     }
 
     /// Build mouse-position samples + click impulses from a recording.
-    static func make(events: [MouseEvent], frameRate: Int, videoSize: CGSize, duration: Double) -> CursorRenderer {
+    static func make(events: [MouseEvent], frameRate: Int, videoSize: CGSize, duration: Double,
+                     pointScale: CGFloat = 2) -> CursorRenderer {
         let dt = 1.0 / Double(max(frameRate, 1))
         let frameCount = max(1, Int((duration / dt).rounded()))
         var positions = [CGPoint](repeating: CGPoint(x: videoSize.width / 2, y: videoSize.height / 2),
@@ -80,7 +87,8 @@ final class CursorRenderer {
         }
 
         return CursorRenderer(clicks: clicks, mousePositions: positions,
-                              frameRate: frameRate, videoSize: videoSize)
+                              frameRate: frameRate, videoSize: videoSize,
+                              pointScale: pointScale)
     }
 
     /// Composite cursor + ripple onto `base`. (focusX,focusY) is the camera focus,
@@ -103,7 +111,7 @@ final class CursorRenderer {
             for click in clicks where time >= click.time && time - click.time <= rippleDuration {
                 let age = time - click.time
                 let progress = age / rippleDuration
-                let targetRadius = (18.0 + 70.0 * progress) * zoom
+                let targetRadius = (18.0 + 70.0 * progress) * zoom * Double(pointScale) * 0.75
                 let alpha = max(0, 1.0 - progress)
 
                 let cx = (click.x - focus.x) * zoom + videoSize.width / 2
@@ -125,9 +133,10 @@ final class CursorRenderer {
             }
         }
 
-        // Cursor.
+        // Cursor. The base image is authored in points; scale to pixel space
+        // (Retina ×2) plus a 1.3× style boost so it reads clearly in demos.
         if let base = cursorBaseImage {
-            let cursorScale = max(1.0, zoom * 0.9)
+            let cursorScale = pointScale * 1.3 * max(1.0, zoom * 0.9)
             let scaled = base.transformed(by: CGAffineTransform(scaleX: cursorScale, y: cursorScale))
             // Anchor the cursor "hot spot" (tip) at (outX, ciY-0).
             let height = scaled.extent.height
