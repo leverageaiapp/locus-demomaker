@@ -132,6 +132,11 @@ struct RecordingsListView: View {
                     options: .init(visualMode: visualMode,
                                    cameraBackdropHex: cameraBackdropHex)
                 )
+                // Show the finished video right away — exporting is the whole
+                // point; nobody wants to go digging for the file afterwards.
+                if case .finished(let exportedURL) = exporter.phase {
+                    NSWorkspace.shared.open(exportedURL)
+                }
                 // Refresh so the row picks up the new export.json marker and
                 // can flip to the post-export action set.
                 await library.refresh()
