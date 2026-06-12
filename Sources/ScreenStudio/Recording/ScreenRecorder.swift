@@ -185,8 +185,13 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
                           userInfo: [NSLocalizedDescriptionKey: "Recorder not running"])
         }
         let stopStart = Date()
-        try? await stream.stopCapture()
-        logger.info("stopCapture took \(Int(-stopStart.timeIntervalSinceNow * 1000)) ms")
+        // stopCapture can wedge for many seconds when the stream already died
+        // (display sleep, TCC revocation, display disconnect). The writer can
+        // finalize without it — cap the wait so stop never feels hung.
+        await Self.withTimeout(seconds: 3) {
+            try? await stream.stopCapture()
+        }
+        logger.notice("stopCapture stage took \(Int(-stopStart.timeIntervalSinceNow * 1000)) ms")
         self.stream = nil
         sessionControlQueue.async { [weak self] in
             self?.audioCaptureSession.stopRunning()
@@ -210,8 +215,34 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
                 }
             }
         }
-        logger.info("finishWriting took \(Int(-finishStart.timeIntervalSinceNow * 1000)) ms")
+        logger.notice("finishWriting took \(Int(-finishStart.timeIntervalSinceNow * 1000)) ms")
         return result
+    }
+
+    /// Run `op`, but return after `seconds` even if it hasn't finished —
+    /// the abandoned task keeps running harmlessly in the background.
+    private static func withTimeout(seconds: Double, _ op: @escaping @Sendable () async -> Void) async {
+        final class Once: @unchecked Sendable {
+            private let lock = NSLock()
+            private var fired = false
+            func run(_ body: () -> Void) {
+                lock.lock(); defer { lock.unlock() }
+                guard !fired else { return }
+                fired = true
+                body()
+            }
+        }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let once = Once()
+            Task {
+                await op()
+                once.run { cont.resume() }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                once.run { cont.resume() }
+            }
+        }
     }
 
     // MARK: - SCStreamOutput
