@@ -74,6 +74,9 @@ final class RecordingSession: ObservableObject {
     private let cameraRecorder = CameraRecorder()
     private let mouseTracker = MouseTracker()
     private var startedAt: Date?
+    /// Held while recording so the display can't sleep mid-recording — a
+    /// slept display gets captured as literal black frames.
+    private var sleepActivity: NSObjectProtocol?
 
     private static let modeKey = "captureMode"
     private static let regionKey = "preferredRegion"
@@ -374,6 +377,15 @@ final class RecordingSession: ObservableObject {
             }
             self.lastRecordingDirectory = dir
             self.startedAt = Date()
+            sleepActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled, .userInitiated],
+                reason: "Screen recording in progress"
+            )
+            recorder.onStreamError = { [weak self] error in
+                Task { @MainActor in
+                    await self?.handleStreamFailure(error)
+                }
+            }
             state = .recording(startedAt: Date())
         } catch {
             _ = await cameraRecorder.stop()
@@ -382,10 +394,24 @@ final class RecordingSession: ObservableObject {
         }
     }
 
+    /// The capture stream died mid-recording (display disconnect, TCC
+    /// revocation, system pressure…). Finalize what was captured so far and
+    /// tell the user instead of silently recording nothing.
+    private func handleStreamFailure(_ error: Error) async {
+        guard case .recording = state else { return }
+        logger.error("Stream failed mid-recording: \(error.localizedDescription)")
+        _ = await stopRecording()
+        state = .error("Recording stopped early: \(error.localizedDescription). The captured part was saved.")
+    }
+
     /// Stop and persist metadata.
     func stopRecording() async -> URL? {
         guard case .recording = state else { return nil }
         state = .stopping
+        if let activity = sleepActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            sleepActivity = nil
+        }
         let events = mouseTracker.stop()
         do {
             // Screen and camera writers flush independently — finalize both

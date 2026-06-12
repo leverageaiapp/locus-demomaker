@@ -27,6 +27,9 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
 
     private var sessionStarted = false
     private var firstSampleTime: CMTime?
+    /// Invoked when the capture stream dies mid-recording so the session can
+    /// finalize the file and surface the failure instead of just logging it.
+    var onStreamError: ((Error) -> Void)?
     private(set) var outputURL: URL?
     private(set) var pixelSize: CGSize = .zero
     private(set) var displayScale: CGFloat = 1.0
@@ -298,5 +301,6 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptur
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         logger.error("Stream stopped with error: \(error.localizedDescription)")
+        onStreamError?(error)
     }
 }
