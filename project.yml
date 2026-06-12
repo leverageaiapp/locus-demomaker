@@ -35,8 +35,8 @@ targets:
       properties:
         CFBundleName: ScreenStudio
         CFBundleDisplayName: Locus DemoMaker
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.6.0"
+        CFBundleVersion: "6"
         LSMinimumSystemVersion: "13.0"
         NSHighResolutionCapable: true
         NSCameraUsageDescription: "Camera is used to record a circular presenter bubble alongside screen capture."
